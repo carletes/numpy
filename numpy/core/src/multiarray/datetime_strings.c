@@ -12,12 +12,12 @@
 
 #include <time.h>
 
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #define _MULTIARRAYMODULE
 #include <numpy/arrayobject.h>
 
 #include "npy_config.h"
-#include "numpy/npy_3kcompat.h"
+#include "npy_pycompat.h"
 
 #include "numpy/arrayscalars.h"
 #include "methods.h"
@@ -25,7 +25,11 @@
 #include "datetime_strings.h"
 
 /* Platform-specific time_t typedef */
-typedef time_t NPY_TIME_T;
+#if defined(NPY_MINGW_USE_CUSTOM_MSVCR)
+ typedef __time64_t NPY_TIME_T;
+#else
+ typedef time_t NPY_TIME_T;
+#endif
 
 /*
  * Wraps `localtime` functionality for multiple platforms. This
@@ -43,7 +47,7 @@ get_localtime(NPY_TIME_T *ts, struct tm *tms)
         func_name = "localtime_s";
         goto fail;
     }
- #elif defined(__GNUC__) && defined(NPY_MINGW_USE_CUSTOM_MSVCR)
+ #elif defined(NPY_MINGW_USE_CUSTOM_MSVCR)
     if (_localtime64_s(tms, ts) != 0) {
         func_name = "_localtime64_s";
         goto fail;
@@ -88,7 +92,7 @@ get_gmtime(NPY_TIME_T *ts, struct tm *tms)
         func_name = "gmtime_s";
         goto fail;
     }
- #elif defined(__GNUC__) && defined(NPY_MINGW_USE_CUSTOM_MSVCR)
+ #elif defined(NPY_MINGW_USE_CUSTOM_MSVCR)
     if (_gmtime64_s(tms, ts) != 0) {
         func_name = "_gmtime64_s";
         goto fail;
@@ -114,6 +118,37 @@ get_gmtime(NPY_TIME_T *ts, struct tm *tms)
 fail:
     PyErr_Format(PyExc_OSError, "Failed to use '%s' to convert "
                                 "to a UTC time", func_name);
+    return -1;
+}
+
+/*
+ * Wraps `mktime` functionality for multiple platforms. This
+ * converts a local time struct to an UTC value.
+ *
+ * Returns timestamp on success, -1 on failure.
+ */
+static NPY_TIME_T
+get_mktime(struct tm *tms)
+{
+    char *func_name = "<unknown>";
+    NPY_TIME_T ts;
+#if defined(NPY_MINGW_USE_CUSTOM_MSVCR)
+    ts = _mktime64(tms);
+    if (ts == -1) {
+        func_name = "_mktime64";
+        goto fail;
+    }
+#else
+    ts = mktime(tms);
+    if (ts == -1) {
+        func_name = "mktime";
+        goto fail;
+    }
+#endif
+    return ts;
+fail:
+    PyErr_Format(PyExc_OSError, "Failed to use '%s' to convert "
+                                "local time to UTC", func_name);
     return -1;
 }
 
@@ -234,10 +269,8 @@ convert_datetimestruct_local_to_utc(npy_datetimestruct *out_dts_utc,
         tm_.tm_isdst = -1;
 
         /* mktime converts a local 'struct tm' into a time_t */
-        rawtime = mktime(&tm_);
+        rawtime = get_mktime(&tm_);
         if (rawtime == -1) {
-            PyErr_SetString(PyExc_OSError, "Failed to use mktime to "
-                                        "convert local time to UTC");
             return -1;
         }
 
@@ -295,7 +328,7 @@ convert_datetimestruct_local_to_utc(npy_datetimestruct *out_dts_utc,
  * Returns 0 on success, -1 on failure.
  */
 NPY_NO_EXPORT int
-parse_iso_8601_datetime(char *str, int len,
+parse_iso_8601_datetime(char *str, Py_ssize_t len,
                     NPY_DATETIMEUNIT unit,
                     NPY_CASTING casting,
                     npy_datetimestruct *out,
@@ -305,7 +338,8 @@ parse_iso_8601_datetime(char *str, int len,
 {
     int year_leap = 0;
     int i, numdigits;
-    char *substr, sublen;
+    char *substr;
+    Py_ssize_t sublen;
     NPY_DATETIMEUNIT bestunit;
 
     /* Initialize the output to all zeros */
@@ -1016,8 +1050,18 @@ make_iso_8601_datetime(npy_datetimestruct *dts, char *outstr, int outlen,
         return 0;
     }
 
-    /* Only do local time within a reasonable year range */
-    if ((dts->year <= 1800 || dts->year >= 10000) && tzoffset == -1) {
+    /*
+     * Only do local time within a reasonable year range. The years
+     * earlier than 1970 are not made local, because the Windows API
+     * raises an error when they are attempted. For consistency, this
+     * restriction is applied to all platforms.
+     *
+     * Note that this only affects how the datetime becomes a string.
+     * The result is still completely unambiguous, it only means
+     * that datetimes outside this range will not include a time zone
+     * when they are printed.
+     */
+    if ((dts->year < 1970 || dts->year >= 10000) && tzoffset == -1) {
         local = 0;
     }
 

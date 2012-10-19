@@ -18,9 +18,8 @@
 #include "Python.h"
 #include "structmember.h"
 
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #define _MULTIARRAYMODULE
-#define NPY_NO_PREFIX
 #include "numpy/arrayobject.h"
 #include "numpy/arrayscalars.h"
 
@@ -28,7 +27,7 @@
 
 #include "npy_config.h"
 
-#include "numpy/npy_3kcompat.h"
+#include "npy_pycompat.h"
 
 NPY_NO_EXPORT int NPY_NUMUSERTYPES = 0;
 
@@ -52,9 +51,6 @@ NPY_NO_EXPORT int NPY_NUMUSERTYPES = 0;
 #include "item_selection.h"
 #include "shape.h"
 #include "ctors.h"
-#include "na_object.h"
-#include "na_mask.h"
-#include "reduction.h"
 
 /* Only here for API compatibility */
 NPY_NO_EXPORT PyTypeObject PyBigArray_Type;
@@ -320,7 +316,7 @@ PyArray_ConcatenateArrays(int narrays, PyArrayObject **arrays, int axis)
     PyArray_Descr *dtype = NULL;
     PyArrayObject *ret = NULL;
     PyArrayObject_fields *sliding_view = NULL;
-    int has_maskna;
+    int orig_axis = axis;
 
     if (narrays <= 0) {
         PyErr_SetString(PyExc_ValueError,
@@ -341,19 +337,27 @@ PyArray_ConcatenateArrays(int narrays, PyArrayObject **arrays, int axis)
     if (axis < 0) {
         axis += ndim;
     }
+
+    if (ndim == 1 & axis != 0) {
+        char msg[] = "axis != 0 for ndim == 1; this will raise an error in "
+                     "future versions of numpy";
+        if (DEPRECATE(msg) < 0) {
+            return NULL;
+        }
+        axis = 0;
+    }
+
     if (axis < 0 || axis >= ndim) {
         PyErr_Format(PyExc_IndexError,
-                        "axis %d out of bounds [0, %d)", axis, ndim);
+                     "axis %d out of bounds [0, %d)", orig_axis, ndim);
         return NULL;
     }
 
     /*
      * Figure out the final concatenated shape starting from the first
-     * array's shape. Also check whether any of the inputs have an
-     * NA mask.
+     * array's shape.
      */
     memcpy(shape, PyArray_SHAPE(arrays[0]), ndim * sizeof(shape[0]));
-    has_maskna = PyArray_HASMASKNA(arrays[0]);
     for (iarrays = 1; iarrays < narrays; ++iarrays) {
         npy_intp *arr_shape;
 
@@ -379,8 +383,6 @@ PyArray_ConcatenateArrays(int narrays, PyArrayObject **arrays, int axis)
                 return NULL;
             }
         }
-
-        has_maskna = has_maskna || PyArray_HASMASKNA(arrays[iarrays]);
     }
 
     /* Get the priority subtype for the array */
@@ -426,14 +428,6 @@ PyArray_ConcatenateArrays(int narrays, PyArrayObject **arrays, int axis)
         return NULL;
     }
 
-    /* Add an NA mask if required */
-    if (has_maskna) {
-        if (PyArray_AllocateMaskNA(ret, 1, 0, 1) < 0) {
-            Py_DECREF(ret);
-            return NULL;
-        }
-    }
-
     /*
      * Create a view which slides through ret for assigning the
      * successive input arrays.
@@ -450,7 +444,7 @@ PyArray_ConcatenateArrays(int narrays, PyArrayObject **arrays, int axis)
 
         /* Copy the data for this array */
         if (PyArray_AssignArray((PyArrayObject *)sliding_view, arrays[iarrays],
-                            NULL, NPY_SAME_KIND_CASTING, 0, NULL) < 0) {
+                            NULL, NPY_SAME_KIND_CASTING) < 0) {
             Py_DECREF(sliding_view);
             Py_DECREF(ret);
             return NULL;
@@ -459,10 +453,6 @@ PyArray_ConcatenateArrays(int narrays, PyArrayObject **arrays, int axis)
         /* Slide to the start of the next window */
         sliding_view->data += sliding_view->dimensions[axis] *
                                  sliding_view->strides[axis];
-        if (has_maskna) {
-            sliding_view->maskna_data += sliding_view->dimensions[axis] *
-                                     sliding_view->maskna_strides[axis];
-        }
     }
 
     Py_DECREF(sliding_view);
@@ -479,11 +469,11 @@ PyArray_ConcatenateFlattenedArrays(int narrays, PyArrayObject **arrays,
     PyTypeObject *subtype = &PyArray_Type;
     double priority = NPY_PRIORITY;
     int iarrays;
-    npy_intp shape[2], strides[2];
+    npy_intp stride, sizes[NPY_MAXDIMS];
+    npy_intp shape = 0;
     PyArray_Descr *dtype = NULL;
     PyArrayObject *ret = NULL;
     PyArrayObject_fields *sliding_view = NULL;
-    int has_maskna;
 
     if (narrays <= 0) {
         PyErr_SetString(PyExc_ValueError,
@@ -491,25 +481,19 @@ PyArray_ConcatenateFlattenedArrays(int narrays, PyArrayObject **arrays,
         return NULL;
     }
 
-    /* All the arrays must have the same total number of elements */
-    shape[0] = narrays;
-    shape[1] = PyArray_SIZE(arrays[0]);
-
     /*
      * Figure out the final concatenated shape starting from the first
-     * array's shape. Also check whether any of the inputs have an
-     * NA mask.
+     * array's shape.
      */
-    has_maskna = PyArray_HASMASKNA(arrays[0]);
-    for (iarrays = 1; iarrays < narrays; ++iarrays) {
-        if (PyArray_SIZE(arrays[iarrays]) != shape[1]) {
+    for (iarrays = 0; iarrays < narrays; ++iarrays) {
+        shape += sizes[iarrays] = PyArray_SIZE(arrays[iarrays]);
+        /* Check for overflow */
+        if (shape < 0) { 
             PyErr_SetString(PyExc_ValueError,
-                            "all the input arrays must have same "
-                            "number of elements");
+                            "total number of elements "
+                            "too large to concatenate");
             return NULL;
         }
-
-        has_maskna = has_maskna || PyArray_HASMASKNA(arrays[iarrays]);
     }
 
     /* Get the priority subtype for the array */
@@ -529,28 +513,19 @@ PyArray_ConcatenateFlattenedArrays(int narrays, PyArrayObject **arrays,
         return NULL;
     }
 
-    strides[1] = dtype->elsize;
-    strides[0] = strides[1] * shape[1];
+    stride = dtype->elsize;
 
     /* Allocate the array for the result. This steals the 'dtype' reference. */
     ret = (PyArrayObject *)PyArray_NewFromDescr(subtype,
                                                     dtype,
-                                                    2,
-                                                    shape,
-                                                    strides,
+                                                    1,
+                                                    &shape,
+                                                    &stride,
                                                     NULL,
                                                     0,
                                                     NULL);
     if (ret == NULL) {
         return NULL;
-    }
-
-    /* Add an NA mask if required */
-    if (has_maskna) {
-        if (PyArray_AllocateMaskNA(ret, 1, 0, 1) < 0) {
-            Py_DECREF(ret);
-            return NULL;
-        }
     }
 
     /*
@@ -563,9 +538,10 @@ PyArray_ConcatenateFlattenedArrays(int narrays, PyArrayObject **arrays,
         Py_DECREF(ret);
         return NULL;
     }
-    /* Each array gets flattened into one slot along 'axis' */
-    sliding_view->dimensions[0] = 1;
+
     for (iarrays = 0; iarrays < narrays; ++iarrays) {
+        /* Adjust the window dimensions for this array */
+        sliding_view->dimensions[0] = sizes[iarrays];
 
         /* Copy the data for this array */
         if (PyArray_CopyAsFlat((PyArrayObject *)sliding_view, arrays[iarrays],
@@ -576,10 +552,7 @@ PyArray_ConcatenateFlattenedArrays(int narrays, PyArrayObject **arrays,
         }
 
         /* Slide to the start of the next window */
-        sliding_view->data += sliding_view->strides[0];
-        if (has_maskna) {
-            sliding_view->maskna_data += sliding_view->maskna_strides[0];
-        }
+        sliding_view->data += sliding_view->strides[0] * sizes[iarrays];
     }
 
     Py_DECREF(sliding_view);
@@ -620,7 +593,7 @@ PyArray_Concatenate(PyObject *op, int axis)
             goto fail;
         }
         arrays[iarrays] = (PyArrayObject *)PyArray_FromAny(item, NULL,
-                                            0, 0, NPY_ARRAY_ALLOWNA, NULL);
+                                            0, 0, 0, NULL);
         Py_DECREF(item);
         if (arrays[iarrays] == NULL) {
             narrays = iarrays;
@@ -638,6 +611,7 @@ PyArray_Concatenate(PyObject *op, int axis)
     for (iarrays = 0; iarrays < narrays; ++iarrays) {
         Py_DECREF(arrays[iarrays]);
     }
+    PyArray_free(arrays);
 
     return (PyObject *)ret;
 
@@ -646,6 +620,7 @@ fail:
     for (iarrays = 0; iarrays < narrays; ++iarrays) {
         Py_DECREF(arrays[iarrays]);
     }
+    PyArray_free(arrays);
 
     return NULL;
 }
@@ -654,7 +629,7 @@ static int
 _signbit_set(PyArrayObject *arr)
 {
     static char bitmask = (char) 0x80;
-    char *ptr;  /* points to the byte to test */
+    char *ptr;  /* points to the npy_byte to test */
     char byteorder;
     int elsize;
 
@@ -662,9 +637,9 @@ _signbit_set(PyArrayObject *arr)
     byteorder = PyArray_DESCR(arr)->byteorder;
     ptr = PyArray_DATA(arr);
     if (elsize > 1 &&
-        (byteorder == PyArray_LITTLE ||
-         (byteorder == PyArray_NATIVE &&
-          PyArray_ISNBO(PyArray_LITTLE)))) {
+        (byteorder == NPY_LITTLE ||
+         (byteorder == NPY_NATIVE &&
+          PyArray_ISNBO(NPY_LITTLE)))) {
         ptr += elsize - 1;
     }
     return ((*ptr & bitmask) != 0);
@@ -684,14 +659,14 @@ _signbit_set(PyArrayObject *arr)
 NPY_NO_EXPORT NPY_SCALARKIND
 PyArray_ScalarKind(int typenum, PyArrayObject **arr)
 {
-    NPY_SCALARKIND ret = PyArray_NOSCALAR;
+    NPY_SCALARKIND ret = NPY_NOSCALAR;
 
     if ((unsigned int)typenum < NPY_NTYPES) {
         ret = _npy_scalar_kinds_table[typenum];
         /* Signed integer types are INTNEG in the table */
-        if (ret == PyArray_INTNEG_SCALAR) {
+        if (ret == NPY_INTNEG_SCALAR) {
             if (!arr || !_signbit_set(*arr)) {
-                ret = PyArray_INTPOS_SCALAR;
+                ret = NPY_INTPOS_SCALAR;
             }
         }
     } else if (PyTypeNum_ISUSERDEF(typenum)) {
@@ -719,13 +694,13 @@ PyArray_CanCoerceScalar(int thistype, int neededtype,
     int *castlist;
 
     /* If 'thistype' is not a scalar, it must be safely castable */
-    if (scalar == PyArray_NOSCALAR) {
+    if (scalar == NPY_NOSCALAR) {
         return PyArray_CanCastSafely(thistype, neededtype);
     }
     if ((unsigned int)neededtype < NPY_NTYPES) {
         NPY_SCALARKIND neededscalar;
 
-        if (scalar == PyArray_OBJECT_SCALAR) {
+        if (scalar == NPY_OBJECT_SCALAR) {
             return PyArray_CanCastSafely(thistype, neededtype);
         }
 
@@ -754,7 +729,7 @@ PyArray_CanCoerceScalar(int thistype, int neededtype,
     from = PyArray_DescrFromType(thistype);
     if (from->f->cancastscalarkindto
         && (castlist = from->f->cancastscalarkindto[scalar])) {
-        while (*castlist != PyArray_NOTYPE) {
+        while (*castlist != NPY_NOTYPE) {
             if (*castlist++ == neededtype) {
                 Py_DECREF(from);
                 return 1;
@@ -1491,7 +1466,7 @@ PyArray_EquivTypes(PyArray_Descr *type1, PyArray_Descr *type2)
     int type_num1, type_num2, size1, size2;
 
     if (type1 == type2) {
-        return TRUE;
+        return NPY_TRUE;
     }
 
     type_num1 = type1->type_num;
@@ -1500,10 +1475,10 @@ PyArray_EquivTypes(PyArray_Descr *type1, PyArray_Descr *type2)
     size2 = type2->elsize;
 
     if (size1 != size2) {
-        return FALSE;
+        return NPY_FALSE;
     }
     if (PyArray_ISNBO(type1->byteorder) != PyArray_ISNBO(type2->byteorder)) {
-        return FALSE;
+        return NPY_FALSE;
     }
     if (type1->subarray || type2->subarray) {
         return ((type_num1 == type_num2)
@@ -1529,7 +1504,7 @@ NPY_NO_EXPORT unsigned char
 PyArray_EquivTypenums(int typenum1, int typenum2)
 {
     PyArray_Descr *d1, *d2;
-    Bool ret;
+    npy_bool ret;
 
     d1 = PyArray_DescrFromType(typenum1);
     d2 = PyArray_DescrFromType(typenum2);
@@ -1542,18 +1517,26 @@ PyArray_EquivTypenums(int typenum1, int typenum2)
 /*** END C-API FUNCTIONS **/
 
 static PyObject *
-_prepend_ones(PyArrayObject *arr, int nd, int ndmin)
+_prepend_ones(PyArrayObject *arr, int nd, int ndmin, NPY_ORDER order)
 {
     npy_intp newdims[NPY_MAXDIMS];
     npy_intp newstrides[NPY_MAXDIMS];
+    npy_intp newstride;
     int i, k, num;
     PyArrayObject *ret;
     PyArray_Descr *dtype;
 
+    if (order == NPY_FORTRANORDER || PyArray_ISFORTRAN(arr) || PyArray_NDIM(arr) == 0) {
+        newstride = PyArray_DESCR(arr)->elsize;
+    }
+    else {
+        newstride = PyArray_STRIDES(arr)[0] * PyArray_DIMS(arr)[0];
+    }
+
     num = ndmin - nd;
     for (i = 0; i < num; i++) {
         newdims[i] = 1;
-        newstrides[i] = PyArray_DESCR(arr)->elsize;
+        newstrides[i] = newstride;
     }
     for (i = num; i < ndmin; i++) {
         k = i - num;
@@ -1565,7 +1548,7 @@ _prepend_ones(PyArrayObject *arr, int nd, int ndmin)
     ret = (PyArrayObject *)PyArray_NewFromDescr(Py_TYPE(arr),
                         dtype, ndmin, newdims, newstrides,
                         PyArray_DATA(arr),
-            PyArray_FLAGS(arr) & ~(NPY_ARRAY_MASKNA | NPY_ARRAY_OWNMASKNA),
+                        PyArray_FLAGS(arr),
                         (PyObject *)arr);
     if (ret == NULL) {
         return NULL;
@@ -1575,24 +1558,6 @@ _prepend_ones(PyArrayObject *arr, int nd, int ndmin)
         Py_DECREF(ret);
         return NULL;
     }
-
-    /* Take a view of the NA mask as well if necessary */
-    if (PyArray_HASMASKNA(arr)) {
-        PyArrayObject_fields *fret = (PyArrayObject_fields *)ret;
-
-        fret->maskna_dtype = PyArray_MASKNA_DTYPE(arr);
-        Py_INCREF(fret->maskna_dtype);
-        fret->maskna_data = PyArray_MASKNA_DATA(arr);
-
-        for (i = 0; i < num; ++i) {
-            fret->maskna_strides[i] = 0;
-        }
-        for (i = num; i < ndmin; ++i) {
-            fret->maskna_strides[i] = PyArray_MASKNA_STRIDES(arr)[i - num];
-        }
-        fret->flags |= NPY_ARRAY_MASKNA;
-    }
-
 
     return (PyObject *)ret;
 }
@@ -1609,56 +1574,30 @@ _array_fromobject(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kws)
 {
     PyObject *op;
     PyArrayObject *oparr = NULL, *ret = NULL;
-    Bool subok = FALSE;
-    Bool copy = TRUE;
+    npy_bool subok = NPY_FALSE;
+    npy_bool copy = NPY_TRUE;
     int ndmin = 0, nd;
     PyArray_Descr *type = NULL;
     PyArray_Descr *oldtype = NULL;
     NPY_ORDER order = NPY_KEEPORDER;
-    int flags = 0, maskna = -1, ownmaskna = 0;
-    PyObject *maskna_in = Py_None;
+    int flags = 0;
 
     static char *kwd[]= {"object", "dtype", "copy", "order", "subok",
-                         "ndmin", "maskna", "ownmaskna", NULL};
+                         "ndmin", NULL};
 
     if (PyTuple_GET_SIZE(args) > 2) {
         PyErr_SetString(PyExc_ValueError,
                         "only 2 non-keyword arguments accepted");
         return NULL;
     }
-    if(!PyArg_ParseTupleAndKeywords(args, kws, "O|O&O&O&O&iOi", kwd,
+    if(!PyArg_ParseTupleAndKeywords(args, kws, "O|O&O&O&O&i", kwd,
                 &op,
                 PyArray_DescrConverter2, &type,
                 PyArray_BoolConverter, &copy,
                 PyArray_OrderConverter, &order,
                 PyArray_BoolConverter, &subok,
-                &ndmin,
-                &maskna_in,
-                &ownmaskna)) {
+                &ndmin)) {
         goto clean_type;
-    }
-
-    /*
-     * Treat None the same as not providing the parameter, set
-     * maskna to -1 (unprovided), 0 (False), or 1 (True).
-     */
-    if (maskna_in != Py_None) {
-        maskna = PyObject_IsTrue(maskna_in);
-        if (maskna == -1) {
-            return NULL;
-        }
-    }
-
-    /* 'ownmaskna' forces 'maskna' to be True */
-    if (ownmaskna) {
-        if (maskna == 0) {
-            PyErr_SetString(PyExc_ValueError,
-                    "cannot specify maskna=False and ownmaskna=True");
-            return NULL;
-        }
-        else {
-            maskna = 1;
-        }
     }
 
     if (ndmin > NPY_MAXDIMS) {
@@ -1668,34 +1607,13 @@ _array_fromobject(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kws)
         goto clean_type;
     }
     /* fast exit if simple call */
-    if (((subok && PyArray_Check(op)) ||
-                 (!subok && PyArray_CheckExact(op))) &&
-              ((maskna == -1) ||
-               (maskna == 1 && PyArray_HASMASKNA((PyArrayObject *)op)) ||
-               (maskna == 0 && !PyArray_HASMASKNA((PyArrayObject *)op)))) {
+    if ((subok && PyArray_Check(op)) ||
+        (!subok && PyArray_CheckExact(op))) {
         oparr = (PyArrayObject *)op;
         if (type == NULL) {
             if (!copy && STRIDING_OK(oparr, order)) {
-                /*
-                 * If mask ownership is requested and the array doesn't
-                 * already own its own mask, make a view which owns its
-                 * own mask.
-                 */
-                if (ownmaskna &&
-                            !(PyArray_FLAGS(oparr) & NPY_ARRAY_OWNMASKNA)) {
-                    ret = (PyArrayObject *)PyArray_View(oparr, NULL, NULL);
-                    if (ret == NULL) {
-                        return NULL;
-                    }
-                    if (PyArray_AllocateMaskNA(ret, 1, 0, 1) < 0) {
-                        Py_DECREF(ret);
-                        return NULL;
-                    }
-                }
-                else {
-                    ret = oparr;
-                    Py_INCREF(ret);
-                }
+                ret = oparr;
+                Py_INCREF(ret);
                 goto finish;
             }
             else {
@@ -1706,7 +1624,7 @@ _array_fromobject(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kws)
         /* One more chance */
         oldtype = PyArray_DESCR(oparr);
         if (PyArray_EquivTypes(oldtype, type)) {
-            if (!copy && !ownmaskna && STRIDING_OK(oparr, order)) {
+            if (!copy && STRIDING_OK(oparr, order)) {
                 Py_INCREF(op);
                 ret = oparr;
                 goto finish;
@@ -1740,23 +1658,6 @@ _array_fromobject(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kws)
         flags |= NPY_ARRAY_ENSUREARRAY;
     }
 
-    /* If maskna is the default, allow NA to pass through */
-    if (maskna == -1) {
-        flags |= NPY_ARRAY_ALLOWNA;
-    }
-    /* If maskna is True, force there to be an NA mask */
-    else if (maskna == 1) {
-        flags |= NPY_ARRAY_MASKNA | NPY_ARRAY_ALLOWNA;
-        if (ownmaskna) {
-            flags |= NPY_ARRAY_OWNMASKNA;
-        }
-    }
-    /*
-     * Otherwise maskna is False, so we don't specify NPY_ARRAY_ALLOWNA.
-     * An array with an NA mask will cause a copy into an array
-     * without an NA mask
-     */
-
     flags |= NPY_ARRAY_FORCECAST;
     Py_XINCREF(type);
     ret = (PyArrayObject *)PyArray_CheckFromAny(op, type,
@@ -1776,7 +1677,7 @@ _array_fromobject(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kws)
      * create a new array from the same data with ones in the shape
      * steals a reference to ret
      */
-    return _prepend_ones(ret, nd, ndmin);
+    return _prepend_ones(ret, nd, ndmin, order);
 
 clean_type:
     Py_XDECREF(type);
@@ -1787,18 +1688,16 @@ static PyObject *
 array_copyto(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kwds)
 {
 
-    static char *kwlist[] = {"dst","src","casting","where","preservena",NULL};
+    static char *kwlist[] = {"dst","src","casting","where",NULL};
     PyObject *wheremask_in = NULL;
     PyArrayObject *dst = NULL, *src = NULL, *wheremask = NULL;
     NPY_CASTING casting = NPY_SAME_KIND_CASTING;
-    int preservena = 0;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!O&|O&Oi", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!O&|O&O", kwlist,
                 &PyArray_Type, &dst,
-                &PyArray_AllowNAConverter, &src,
+                &PyArray_Converter, &src,
                 &PyArray_CastingConverter, &casting,
-                &wheremask_in,
-                &preservena)) {
+                &wheremask_in)) {
         goto fail;
     }
 
@@ -1809,14 +1708,13 @@ array_copyto(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kwds)
             goto fail;
         }
         wheremask = (PyArrayObject *)PyArray_FromAny(wheremask_in,
-                                        dtype, 0, 0, NPY_ARRAY_ALLOWNA, NULL);
+                                        dtype, 0, 0, 0, NULL);
         if (wheremask == NULL) {
             goto fail;
         }
     }
 
-    if (PyArray_AssignArray(dst, src,
-                    wheremask, casting, preservena, NULL) < 0) {
+    if (PyArray_AssignArray(dst, src, wheremask, casting) < 0) {
         goto fail;
     }
 
@@ -1836,28 +1734,26 @@ static PyObject *
 array_empty(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kwds)
 {
 
-    static char *kwlist[] = {"shape","dtype","order","maskna",NULL};
+    static char *kwlist[] = {"shape","dtype","order",NULL};
     PyArray_Descr *typecode = NULL;
     PyArray_Dims shape = {NULL, 0};
     NPY_ORDER order = NPY_CORDER;
     npy_bool is_f_order;
     PyArrayObject *ret = NULL;
-    int maskna = 0;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O&|O&O&i", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O&|O&O&", kwlist,
                 PyArray_IntpConverter, &shape,
                 PyArray_DescrConverter, &typecode,
-                PyArray_OrderConverter, &order,
-                &maskna)) {
+                PyArray_OrderConverter, &order)) {
         goto fail;
     }
 
     switch (order) {
         case NPY_CORDER:
-            is_f_order = FALSE;
+            is_f_order = NPY_FALSE;
             break;
         case NPY_FORTRANORDER:
-            is_f_order = TRUE;
+            is_f_order = NPY_TRUE;
             break;
         default:
             PyErr_SetString(PyExc_ValueError,
@@ -1867,17 +1763,6 @@ array_empty(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kwds)
 
     ret = (PyArrayObject *)PyArray_Empty(shape.len, shape.ptr,
                                             typecode, is_f_order);
-
-    if (maskna) {
-        /*
-         * Default the mask to all NA values, because the data is
-         * not initialized
-         */
-        if (PyArray_AllocateMaskNA(ret, 1, 0, 0) < 0) {
-            Py_DECREF(ret);
-            return NULL;
-        }
-    }
 
     PyDimMem_FREE(shape.ptr);
     return (PyObject *)ret;
@@ -1892,36 +1777,24 @@ static PyObject *
 array_empty_like(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kwds)
 {
 
-    static char *kwlist[] = {"prototype","dtype","order","subok","maskna",NULL};
+    static char *kwlist[] = {"prototype","dtype","order","subok",NULL};
     PyArrayObject *prototype = NULL;
     PyArray_Descr *dtype = NULL;
     NPY_ORDER order = NPY_KEEPORDER;
     PyArrayObject *ret = NULL;
-    int subok = 1, maskna = 0;
+    int subok = 1;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O&|O&O&ii", kwlist,
-                &PyArray_AllowNAConverter, &prototype,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O&|O&O&i", kwlist,
+                &PyArray_Converter, &prototype,
                 &PyArray_DescrConverter2, &dtype,
                 &PyArray_OrderConverter, &order,
-                &subok,
-                &maskna)) {
+                &subok)) {
         goto fail;
     }
     /* steals the reference to dtype if it's not NULL */
     ret = (PyArrayObject *)PyArray_NewLikeArray(prototype,
                                             order, dtype, subok);
     Py_DECREF(prototype);
-
-    if (maskna) {
-        /*
-         * Default the mask to all NA values, because the data is
-         * not initialized
-         */
-        if (PyArray_AllocateMaskNA(ret, 1, 0, 0) < 0) {
-            Py_DECREF(ret);
-            return NULL;
-        }
-    }
 
     return (PyObject *)ret;
 
@@ -1998,28 +1871,26 @@ array_scalar(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kwds)
 static PyObject *
 array_zeros(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kwds)
 {
-    static char *kwlist[] = {"shape","dtype","order","maskna",NULL};
+    static char *kwlist[] = {"shape","dtype","order",NULL};
     PyArray_Descr *typecode = NULL;
     PyArray_Dims shape = {NULL, 0};
     NPY_ORDER order = NPY_CORDER;
-    npy_bool is_f_order = FALSE;
+    npy_bool is_f_order = NPY_FALSE;
     PyArrayObject *ret = NULL;
-    int maskna = 0;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O&|O&O&i", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O&|O&O&", kwlist,
                 PyArray_IntpConverter, &shape,
                 PyArray_DescrConverter, &typecode,
-                PyArray_OrderConverter, &order,
-                &maskna)) {
+                PyArray_OrderConverter, &order)) {
         goto fail;
     }
 
     switch (order) {
         case NPY_CORDER:
-            is_f_order = FALSE;
+            is_f_order = NPY_FALSE;
             break;
         case NPY_FORTRANORDER:
-            is_f_order = TRUE;
+            is_f_order = NPY_TRUE;
             break;
         default:
             PyErr_SetString(PyExc_ValueError,
@@ -2029,13 +1900,6 @@ array_zeros(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kwds)
 
     ret = (PyArrayObject *)PyArray_Zeros(shape.len, shape.ptr,
                                         typecode, (int) is_f_order);
-
-    if (maskna) {
-        if (PyArray_AllocateMaskNA(ret, 1, 0, 1) < 0) {
-            Py_DECREF(ret);
-            return NULL;
-        }
-    }
 
     PyDimMem_FREE(shape.ptr);
     return (PyObject *)ret;
@@ -2049,90 +1913,38 @@ array_zeros(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kwds)
 static PyObject *
 array_count_nonzero(PyObject *NPY_UNUSED(self), PyObject *args, PyObject *kwds)
 {
-    static char *kwlist[] = {"arr", "axis", "out", "skipna", "keepdims", NULL};
-
-    PyObject *array_in, *axis_in = NULL, *out_in = NULL;
-    PyObject *ret = NULL;
-    PyArrayObject *array, *out = NULL;
-    npy_bool axis_flags[NPY_MAXDIMS];
-    int skipna = 0, keepdims = 0;
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwds,
-                                "O|OOii:count_nonzero", kwlist,
-                                &array_in,
-                                &axis_in,
-                                &out_in,
-                                &skipna,
-                                &keepdims)) {
-        return NULL;
-    }
-
-    array = (PyArrayObject *)PyArray_FromAny(array_in, NULL,
-                                        0, 0, NPY_ARRAY_ALLOWNA, NULL);
-    if (array == NULL) {
-        return NULL;
-    }
-
-    if (PyArray_ConvertMultiAxis(axis_in, PyArray_NDIM(array),
-                                        axis_flags) != NPY_SUCCEED) {
-        Py_DECREF(array);
-        return NULL;
-    }
-
-    if (out_in != NULL) {
-        if (PyArray_Check(out_in)) {
-            out = (PyArrayObject *)out_in;
-        }
-        else {
-            PyErr_SetString(PyExc_TypeError, "'out' must be an array");
-            return NULL;
-        }
-    }
-
-    ret = PyArray_ReduceCountNonzero(array, out, axis_flags, skipna, keepdims);
-
-    Py_DECREF(array);
-
-    return ret;
-}
-
-static PyObject *
-array_count_reduce_items(PyObject *NPY_UNUSED(self), PyObject *args, PyObject *kwds)
-{
-    static char *kwlist[] = {"arr", "axis", "skipna", "keepdims", NULL};
-
-    PyObject *array_in, *axis_in = NULL;
-    PyObject *ret = NULL;
+    PyObject *array_in;
     PyArrayObject *array;
-    npy_bool axis_flags[NPY_MAXDIMS];
-    int skipna = 0, keepdims = 0;
+    npy_intp count;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds,
-                                "O|Oii:count_reduce_items", kwlist,
-                                &array_in,
-                                &axis_in,
-                                &skipna,
-                                &keepdims)) {
+    if (!PyArg_ParseTuple(args, "O", &array_in)) {
         return NULL;
     }
 
-    array = (PyArrayObject *)PyArray_FromAny(array_in, NULL,
-                                        0, 0, NPY_ARRAY_ALLOWNA, NULL);
+    array = (PyArrayObject *)PyArray_FromAny(array_in, NULL, 0, 0, 0, NULL);
     if (array == NULL) {
         return NULL;
     }
 
-    if (PyArray_ConvertMultiAxis(axis_in, PyArray_NDIM(array),
-                                        axis_flags) != NPY_SUCCEED) {
-        Py_DECREF(array);
-        return NULL;
-    }
-
-    ret = PyArray_CountReduceItems(array, axis_flags, skipna, keepdims);
+    count =  PyArray_CountNonzero(array);
 
     Py_DECREF(array);
 
-    return ret;
+    if (count == -1) {
+        return NULL;
+    }
+#if defined(NPY_PY3K)
+    return PyLong_FromSsize_t(count);
+#elif PY_VERSION_HEX >= 0x02050000
+    return PyInt_FromSsize_t(count);
+#else
+    if ((npy_intp)((long)count) == count) {
+        return PyInt_FromLong(count);
+    }
+    else {
+        return PyLong_FromVoidPtr((void*)count);
+    }
+#endif
 }
 
 static PyObject *
@@ -2160,12 +1972,12 @@ static PyObject *
 array_fromfile(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *keywds)
 {
     PyObject *file = NULL, *ret;
-    int ok;
-    FILE *fp;
     char *sep = "";
     Py_ssize_t nin = -1;
     static char *kwlist[] = {"file", "dtype", "count", "sep", NULL};
     PyArray_Descr *type = NULL;
+    int own;
+    FILE *fp;
 
     if (!PyArg_ParseTupleAndKeywords(args, keywds,
                 "O|O&" NPY_SSIZE_T_PYFMT "s", kwlist,
@@ -2178,9 +1990,11 @@ array_fromfile(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *keywds)
         if (file == NULL) {
             return NULL;
         }
+        own = 1;
     }
     else {
         Py_INCREF(file);
+        own = 0;
     }
     fp = npy_PyFile_Dup(file, "rb");
     if (fp == NULL) {
@@ -2193,13 +2007,20 @@ array_fromfile(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *keywds)
         type = PyArray_DescrFromType(NPY_DEFAULT_TYPE);
     }
     ret = PyArray_FromFile(fp, type, (npy_intp) nin, sep);
-    ok = npy_PyFile_DupClose(file, fp);
-    Py_DECREF(file);
-    if (ok < 0) {
-        Py_DECREF(ret);
-        return NULL;
+
+    if (npy_PyFile_DupClose(file, fp) < 0) {
+        goto fail;
     }
+    if (own && npy_PyFile_CloseFile(file) < 0) {
+        goto fail;
+    }
+    Py_DECREF(file);
     return ret;
+
+fail:
+    Py_DECREF(file);
+    Py_DECREF(ret);
+    return NULL;
 }
 
 static PyObject *
@@ -2638,18 +2459,6 @@ finish:
 }
 
 static PyObject *
-array_isna(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
-{
-    PyObject *a;
-    static char *kwlist[] = {"a", NULL};
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O:isna", kwlist, &a)) {
-        return NULL;
-    }
-    return PyArray_IsNA(a);
-}
-
-static PyObject *
 array_fastCopyAndTranspose(PyObject *NPY_UNUSED(dummy), PyObject *args)
 {
     PyObject *a0;
@@ -2691,29 +2500,19 @@ array_correlate2(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
 static PyObject *
 array_arange(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kws) {
     PyObject *o_start = NULL, *o_stop = NULL, *o_step = NULL, *range=NULL;
-    static char *kwd[]= {"start", "stop", "step", "dtype", "maskna", NULL};
+    static char *kwd[]= {"start", "stop", "step", "dtype", NULL};
     PyArray_Descr *typecode = NULL;
-    int maskna = 0;
 
-    if(!PyArg_ParseTupleAndKeywords(args, kws, "O|OOO&i", kwd,
+    if(!PyArg_ParseTupleAndKeywords(args, kws, "O|OOO&", kwd,
                 &o_start,
                 &o_stop,
                 &o_step,
-                PyArray_DescrConverter2, &typecode,
-                &maskna)) {
+                PyArray_DescrConverter2, &typecode)) {
         Py_XDECREF(typecode);
         return NULL;
     }
     range = PyArray_ArangeObj(o_start, o_stop, o_step, typecode);
     Py_XDECREF(typecode);
-
-    /* Allocate an NA mask if requested */
-    if (maskna) {
-        if (PyArray_AllocateMaskNA((PyArrayObject *)range, 1, 0, 1) < 0) {
-            Py_DECREF(range);
-            return NULL;
-        }
-    }
 
     return range;
 }
@@ -2778,6 +2577,8 @@ array__reconstruct(PyObject *NPY_UNUSED(dummy), PyObject *args)
     PyArray_Dims shape = {NULL, 0};
     PyArray_Descr *dtype = NULL;
 
+    evil_global_disable_warn_O4O8_flag = 1;
+
     if (!PyArg_ParseTuple(args, "O!O&O&",
                 &PyType_Type, &subtype,
                 PyArray_IntpConverter, &shape,
@@ -2794,9 +2595,14 @@ array__reconstruct(PyObject *NPY_UNUSED(dummy), PyObject *args)
     if (shape.ptr) {
         PyDimMem_FREE(shape.ptr);
     }
+
+    evil_global_disable_warn_O4O8_flag = 0;
+
     return ret;
 
  fail:
+    evil_global_disable_warn_O4O8_flag = 0;
+
     Py_XDECREF(dtype);
     if (shape.ptr) {
         PyDimMem_FREE(shape.ptr);
@@ -2938,7 +2744,7 @@ array_can_cast_safely(PyObject *NPY_UNUSED(self), PyObject *args,
     PyObject *from_obj = NULL;
     PyArray_Descr *d1 = NULL;
     PyArray_Descr *d2 = NULL;
-    Bool ret;
+    npy_bool ret;
     PyObject *retobj = NULL;
     NPY_CASTING casting = NPY_SAFE_CASTING;
     static char *kwlist[] = {"from", "to", "casting", NULL};
@@ -2963,7 +2769,7 @@ array_can_cast_safely(PyObject *NPY_UNUSED(self), PyObject *args,
                                 PyArray_IsPythonNumber(from_obj)) {
         PyArrayObject *arr;
         arr = (PyArrayObject *)PyArray_FromAny(from_obj,
-                                        NULL, 0, 0, NPY_ARRAY_ALLOWNA, NULL);
+                                        NULL, 0, 0, 0, NULL);
         if (arr == NULL) {
             goto finish;
         }
@@ -3025,8 +2831,7 @@ array_min_scalar_type(PyObject *NPY_UNUSED(dummy), PyObject *args)
         return NULL;
     }
 
-    array = (PyArrayObject *)PyArray_FromAny(array_in,
-                                NULL, 0, 0, NPY_ARRAY_ALLOWNA, NULL);
+    array = (PyArrayObject *)PyArray_FromAny(array_in, NULL, 0, 0, 0, NULL);
     if (array == NULL) {
         return NULL;
     }
@@ -3071,7 +2876,7 @@ array_result_type(PyObject *NPY_UNUSED(dummy), PyObject *args)
                 goto finish;
             }
             arr[narr] = (PyArrayObject *)PyArray_FromAny(obj,
-                                        NULL, 0, 0, NPY_ARRAY_ALLOWNA, NULL);
+                                        NULL, 0, 0, 0, NULL);
             if (arr[narr] == NULL) {
                 goto finish;
             }
@@ -3186,7 +2991,7 @@ as_buffer(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
 {
     PyObject *mem;
     Py_ssize_t size;
-    Bool ro = FALSE, check = TRUE;
+    npy_bool ro = NPY_FALSE, check = NPY_TRUE;
     void *memptr;
     static char *kwlist[] = {"mem", "size", "readonly", "check", NULL};
 
@@ -3253,7 +3058,7 @@ format_longfloat(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
 {
     PyObject *obj;
     unsigned int precision;
-    longdouble x;
+    npy_longdouble x;
     static char *kwlist[] = {"x", "precision", NULL};
     static char repr[100];
 
@@ -3281,7 +3086,7 @@ compare_chararrays(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
     PyObject *other;
     PyArrayObject *newarr, *newoth;
     int cmp_op;
-    Bool rstrip;
+    npy_bool rstrip;
     char *cmp_str;
     Py_ssize_t strlength;
     PyObject *res = NULL;
@@ -3579,7 +3384,7 @@ _vec_string(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
 
 #ifndef __NPY_PRIVATE_NO_SIGNAL
 
-SIGJMP_BUF _NPY_SIGINT_BUF;
+NPY_SIGJMP_BUF _NPY_SIGINT_BUF;
 
 /*NUMPY_API
  */
@@ -3587,7 +3392,7 @@ NPY_NO_EXPORT void
 _PyArray_SigintHandler(int signum)
 {
     PyOS_setsig(signum, SIG_IGN);
-    SIGLONGJMP(_NPY_SIGINT_BUF, signum);
+    NPY_SIGLONGJMP(_NPY_SIGINT_BUF, signum);
 }
 
 /*NUMPY_API
@@ -3644,6 +3449,102 @@ test_interrupt(PyObject *NPY_UNUSED(self), PyObject *args)
     return PyInt_FromLong(a);
 }
 
+/* malloc/free/realloc hook */
+NPY_NO_EXPORT PyDataMem_EventHookFunc *_PyDataMem_eventhook;
+NPY_NO_EXPORT void *_PyDataMem_eventhook_user_data;
+
+/*NUMPY_API
+ * Sets the allocation event hook for numpy array data.
+ * Takes a PyDataMem_EventHookFunc *, which has the signature:
+ *        void hook(void *old, void *new, size_t size, void *user_data).
+ *   Also takes a void *user_data, and void **old_data.
+ *
+ * Returns a pointer to the previous hook or NULL.  If old_data is
+ * non-NULL, the previous user_data pointer will be copied to it.
+ *
+ * If not NULL, hook will be called at the end of each PyDataMem_NEW/FREE/RENEW:
+ *   result = PyDataMem_NEW(size)        -> (*hook)(NULL, result, size, user_data)
+ *   PyDataMem_FREE(ptr)                 -> (*hook)(ptr, NULL, 0, user_data)
+ *   result = PyDataMem_RENEW(ptr, size) -> (*hook)(ptr, result, size, user_data)
+ *
+ * When the hook is called, the GIL will be held by the calling
+ * thread.  The hook should be written to be reentrant, if it performs
+ * operations that might cause new allocation events (such as the
+ * creation/descruction numpy objects, or creating/destroying Python
+ * objects which might cause a gc)
+ */
+NPY_NO_EXPORT PyDataMem_EventHookFunc *
+PyDataMem_SetEventHook(PyDataMem_EventHookFunc *newhook,
+                       void *user_data, void **old_data)
+{
+    PyGILState_STATE gilstate = PyGILState_Ensure();
+    PyDataMem_EventHookFunc *temp = _PyDataMem_eventhook;
+    _PyDataMem_eventhook = newhook;
+    if (old_data != NULL) {
+        *old_data = _PyDataMem_eventhook_user_data;
+    }
+    _PyDataMem_eventhook_user_data = user_data;
+    PyGILState_Release(gilstate);
+    return temp;
+}
+
+/*NUMPY_API
+ * Allocates memory for array data.
+ */
+NPY_NO_EXPORT void *
+PyDataMem_NEW(size_t size)
+{
+    void *result;
+
+    result = malloc(size);
+    if (_PyDataMem_eventhook != NULL) {
+        PyGILState_STATE gilstate = PyGILState_Ensure();
+        if (_PyDataMem_eventhook != NULL) {
+            (*_PyDataMem_eventhook)(NULL, result, size,
+                                    _PyDataMem_eventhook_user_data);
+        }
+        PyGILState_Release(gilstate);
+    }
+    return (char *)result;
+}
+
+/*NUMPY_API
+ * Free memory for array data.
+ */
+NPY_NO_EXPORT void
+PyDataMem_FREE(void *ptr)
+{
+    free(ptr);
+    if (_PyDataMem_eventhook != NULL) {
+        PyGILState_STATE gilstate = PyGILState_Ensure();
+        if (_PyDataMem_eventhook != NULL) {
+            (*_PyDataMem_eventhook)(ptr, NULL, 0,
+                                    _PyDataMem_eventhook_user_data);
+        }
+        PyGILState_Release(gilstate);
+    }
+}
+
+/*NUMPY_API
+ * Reallocate/resize memory for array data.
+ */
+NPY_NO_EXPORT void *
+PyDataMem_RENEW(void *ptr, size_t size)
+{
+    void *result;
+
+    result = realloc(ptr, size);
+    if (_PyDataMem_eventhook != NULL) {
+        PyGILState_STATE gilstate = PyGILState_Ensure();
+        if (_PyDataMem_eventhook != NULL) {
+            (*_PyDataMem_eventhook)(ptr, result, size,
+                                    _PyDataMem_eventhook_user_data);
+        }
+        PyGILState_Release(gilstate);
+    }
+    return (char *)result;
+}
+
 static struct PyMethodDef array_module_methods[] = {
     {"_get_ndarray_c_version",
         (PyCFunction)array__get_ndarray_c_version,
@@ -3681,9 +3582,6 @@ static struct PyMethodDef array_module_methods[] = {
     {"count_nonzero",
         (PyCFunction)array_count_nonzero,
         METH_VARARGS|METH_KEYWORDS, NULL},
-    {"count_reduce_items",
-        (PyCFunction)array_count_reduce_items,
-        METH_VARARGS|METH_KEYWORDS, NULL},
     {"empty",
         (PyCFunction)array_empty,
         METH_VARARGS|METH_KEYWORDS, NULL},
@@ -3719,9 +3617,6 @@ static struct PyMethodDef array_module_methods[] = {
         METH_VARARGS | METH_KEYWORDS, NULL},
     {"einsum",
         (PyCFunction)array_einsum,
-        METH_VARARGS|METH_KEYWORDS, NULL},
-    {"isna",
-        (PyCFunction)array_isna,
         METH_VARARGS|METH_KEYWORDS, NULL},
     {"_fastCopyAndTranspose",
         (PyCFunction)array_fastCopyAndTranspose,
@@ -3906,7 +3801,7 @@ setup_scalartypes(PyObject *NPY_UNUSED(dict))
 #else
     SINGLE_INHERIT(Long, SignedInteger);
 #endif
-#if SIZEOF_LONGLONG == SIZEOF_LONG && !defined(NPY_PY3K)
+#if NPY_SIZEOF_LONGLONG == SIZEOF_LONG && !defined(NPY_PY3K)
     DUAL_INHERIT(LongLong, Int, SignedInteger);
 #else
     SINGLE_INHERIT(LongLong, SignedInteger);
@@ -4010,7 +3905,7 @@ static struct PyModuleDef moduledef = {
 /* Initialization function for the module */
 #if defined(NPY_PY3K)
 #define RETVAL m
-PyObject *PyInit_multiarray(void) {
+PyMODINIT_FUNC PyInit_multiarray(void) {
 #else
 #define RETVAL
 PyMODINIT_FUNC initmultiarray(void) {
@@ -4072,9 +3967,6 @@ PyMODINIT_FUNC initmultiarray(void) {
     if (PyType_Ready(&NpyIter_Type) < 0) {
         return RETVAL;
     }
-    if (PyType_Ready(&NpyNA_Type) < 0) {
-        return RETVAL;
-    }
 
     PyArrayDescr_Type.tp_hash = PyArray_DescrHash;
     if (PyType_Ready(&PyArrayDescr_Type) < 0) {
@@ -4115,10 +4007,6 @@ PyMODINIT_FUNC initmultiarray(void) {
 
     s = PyUString_FromString("3.1");
     PyDict_SetItemString(d, "__version__", s);
-    Py_DECREF(s);
-
-    s = PyUString_InternFromString(NPY_METADATA_DTSTR);
-    PyDict_SetItemString(d, "METADATA_DTSTR", s);
     Py_DECREF(s);
 
 /* FIXME
@@ -4170,12 +4058,6 @@ PyMODINIT_FUNC initmultiarray(void) {
     Py_INCREF(&NpyBusDayCalendar_Type);
     PyDict_SetItemString(d, "busdaycalendar",
                             (PyObject *)&NpyBusDayCalendar_Type);
-    /* NA Type */
-    PyDict_SetItemString(d, "NAType", (PyObject *)&NpyNA_Type);
-    Py_INCREF(&NpyNA_Type);
-    /* NA  Singleton */
-    Py_INCREF(Npy_NA);
-    PyDict_SetItemString(d, "NA", Npy_NA);
 
     set_flaginfo(d);
 

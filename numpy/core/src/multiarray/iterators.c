@@ -2,15 +2,14 @@
 #include <Python.h>
 #include "structmember.h"
 
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #define _MULTIARRAYMODULE
-#define NPY_NO_PREFIX
 #include "numpy/arrayobject.h"
 #include "numpy/arrayscalars.h"
 
 #include "npy_config.h"
 
-#include "numpy/npy_3kcompat.h"
+#include "npy_pycompat.h"
 
 #include "arrayobject.h"
 #include "iterators.h"
@@ -32,7 +31,8 @@ slice_coerce_index(PyObject *o, npy_intp *v);
  */
 NPY_NO_EXPORT npy_intp
 parse_index_entry(PyObject *op, npy_intp *step_size,
-                    npy_intp *n_steps, npy_intp max)
+                  npy_intp *n_steps, npy_intp max,
+                  int axis, int check_index)
 {
     npy_intp i;
 
@@ -70,12 +70,10 @@ parse_index_entry(PyObject *op, npy_intp *step_size,
         }
         *n_steps = SINGLE_INDEX;
         *step_size = 0;
-        if (i < 0) {
-            i += max;
-        }
-        if (i >= max || i < 0) {
-            PyErr_SetString(PyExc_IndexError, "invalid index");
+        if (check_index) {
+            if (check_and_adjust_index(&i, max, axis) < 0) {
             goto fail;
+            }
         }
     }
     return i;
@@ -87,21 +85,17 @@ parse_index_entry(PyObject *op, npy_intp *step_size,
 
 /*
  * Parses an index that has no fancy indexing. Populates
- * out_dimensions, out_strides, and out_offset. If out_maskna_strides
- * and out_maskoffset aren't NULL, then 'self' must have an NA mask
- * which is used to populate those variables as well.
+ * out_dimensions, out_strides, and out_offset.
  */
 NPY_NO_EXPORT int
 parse_index(PyArrayObject *self, PyObject *op,
             npy_intp *out_dimensions,
             npy_intp *out_strides,
-            npy_intp *out_offset,
-            npy_intp *out_maskna_strides,
-            npy_intp *out_maskna_offset)
+            npy_intp *out_offset)
 {
     int i, j, n;
     int nd_old, nd_new, n_add, n_ellipsis;
-    npy_intp n_steps, start, offset, maskna_offset, step_size;
+    npy_intp n_steps, start, offset, step_size;
     PyObject *op1 = NULL;
     int is_slice;
 
@@ -126,7 +120,6 @@ parse_index(PyArrayObject *self, PyObject *op,
     nd_old = nd_new = 0;
 
     offset = 0;
-    maskna_offset = 0;
     for (i = 0; i < n; i++) {
         if (!is_slice) {
             op1 = PySequence_GetItem(op, i);
@@ -135,8 +128,9 @@ parse_index(PyArrayObject *self, PyObject *op,
             }
         }
         start = parse_index_entry(op1, &step_size, &n_steps,
-                               nd_old < PyArray_NDIM(self) ?
-                               PyArray_DIMS(self)[nd_old] : 0);
+                                  nd_old < PyArray_NDIM(self) ?
+                                  PyArray_DIMS(self)[nd_old] : 0,
+                                  nd_old, nd_old < PyArray_NDIM(self));
         Py_DECREF(op1);
         if (start == -1) {
             break;
@@ -144,9 +138,6 @@ parse_index(PyArrayObject *self, PyObject *op,
         if (n_steps == NEWAXIS_INDEX) {
             out_dimensions[nd_new] = 1;
             out_strides[nd_new] = 0;
-            if (out_maskna_strides != NULL) {
-                out_maskna_strides[nd_new] = 0;
-            }
             nd_new++;
         }
         else if (n_steps == ELLIPSIS_INDEX) {
@@ -165,10 +156,6 @@ parse_index(PyArrayObject *self, PyObject *op,
             for (j = 0; j < n_add; j++) {
                 out_dimensions[nd_new] = PyArray_DIMS(self)[nd_old];
                 out_strides[nd_new] = PyArray_STRIDES(self)[nd_old];
-                if (out_maskna_strides != NULL) {
-                    out_maskna_strides[nd_new] =
-                                    PyArray_MASKNA_STRIDES(self)[nd_old];
-                }
                 nd_new++; nd_old++;
             }
         }
@@ -178,18 +165,11 @@ parse_index(PyArrayObject *self, PyObject *op,
                 return -1;
             }
             offset += PyArray_STRIDES(self)[nd_old]*start;
-            if (out_maskna_offset != NULL) {
-                maskna_offset += PyArray_MASKNA_STRIDES(self)[nd_old]*start;
-            }
             nd_old++;
             if (n_steps != SINGLE_INDEX) {
                 out_dimensions[nd_new] = n_steps;
                 out_strides[nd_new] = step_size *
                                             PyArray_STRIDES(self)[nd_old-1];
-                if (out_maskna_strides != NULL) {
-                    out_maskna_strides[nd_new] = step_size *
-                                        PyArray_MASKNA_STRIDES(self)[nd_old-1];
-                }
                 nd_new++;
             }
         }
@@ -201,16 +181,10 @@ parse_index(PyArrayObject *self, PyObject *op,
     for (j = 0; j < n_add; j++) {
         out_dimensions[nd_new] = PyArray_DIMS(self)[nd_old];
         out_strides[nd_new] = PyArray_STRIDES(self)[nd_old];
-        if (out_maskna_strides != NULL) {
-            out_maskna_strides[nd_new] = PyArray_MASKNA_STRIDES(self)[nd_old];
-        }
         nd_new++;
         nd_old++;
     }
     *out_offset = offset;
-    if (out_maskna_offset != NULL) {
-        *out_maskna_offset = maskna_offset;
-    }
     return nd_new;
 }
 
@@ -408,13 +382,6 @@ PyArray_IterNew(PyObject *obj)
     }
     ao = (PyArrayObject *)obj;
 
-    if (PyArray_HASMASKNA(ao)) {
-        PyErr_SetString(PyExc_ValueError,
-                "Old-style NumPy iterators do not support NA masks, "
-                "use numpy.nditer instead");
-        return NULL;
-    }
-
     it = (PyArrayIterObject *)PyArray_malloc(sizeof(PyArrayIterObject));
     PyObject_Init((PyObject *)it, &PyArrayIter_Type);
     /* it = PyObject_New(PyArrayIterObject, &PyArrayIter_Type);*/
@@ -436,13 +403,6 @@ PyArray_BroadcastToShape(PyObject *obj, npy_intp *dims, int nd)
     int i, diff, j, compat, k;
     PyArrayObject *ao = (PyArrayObject *)obj;
 
-    if (PyArray_HASMASKNA(ao)) {
-        PyErr_SetString(PyExc_ValueError,
-                "Old-style NumPy iterators do not support NA masks, "
-                "use numpy.nditer instead");
-        return NULL;
-    }
-
     if (PyArray_NDIM(ao) > nd) {
         goto err;
     }
@@ -461,11 +421,11 @@ PyArray_BroadcastToShape(PyObject *obj, npy_intp *dims, int nd)
         goto err;
     }
     it = (PyArrayIterObject *)PyArray_malloc(sizeof(PyArrayIterObject));
-    PyObject_Init((PyObject *)it, &PyArrayIter_Type);
-
     if (it == NULL) {
         return NULL;
     }
+    PyObject_Init((PyObject *)it, &PyArrayIter_Type);
+
     PyArray_UpdateFlags(ao, NPY_ARRAY_C_CONTIGUOUS);
     if (PyArray_ISCONTIGUOUS(ao)) {
         it->contiguous = 1;
@@ -632,7 +592,7 @@ static void
 arrayiter_dealloc(PyArrayIterObject *it)
 {
     array_iter_base_dealloc(it);
-    _pya_free(it);
+    PyArray_free(it);
 }
 
 static Py_ssize_t
@@ -670,7 +630,7 @@ iter_subscript_Bool(PyArrayIterObject *self, PyArrayObject *ind)
     dptr = PyArray_DATA(ind);
     /* Get size of return array */
     while (counter--) {
-        if (*((Bool *)dptr) != 0) {
+        if (*((npy_bool *)dptr) != 0) {
             count++;
         }
         dptr += strides;
@@ -692,7 +652,7 @@ iter_subscript_Bool(PyArrayIterObject *self, PyArrayObject *ind)
     /* Loop over Boolean array */
     swap = (PyArray_ISNOTSWAPPED(self->ao) != PyArray_ISNOTSWAPPED(ret));
     while (counter--) {
-        if (*((Bool *)dptr) != 0) {
+        if (*((npy_bool *)dptr) != 0) {
             copyswap(optr, self->dataptr, swap, self->ao);
             optr += itemsize;
         }
@@ -718,14 +678,7 @@ iter_subscript_int(PyArrayIterObject *self, PyArrayObject *ind)
     itemsize = PyArray_DESCR(self->ao)->elsize;
     if (PyArray_NDIM(ind) == 0) {
         num = *((npy_intp *)PyArray_DATA(ind));
-        if (num < 0) {
-            num += self->size;
-        }
-        if (num < 0 || num >= self->size) {
-            PyErr_Format(PyExc_IndexError,
-                         "index %"INTP_FMT" out of bounds"   \
-                         " 0<=index<%"INTP_FMT,
-                         num, self->size);
+        if (check_and_adjust_index(&num, self->size, -1) < 0) {
             PyArray_ITER_RESET(self);
             return NULL;
         }
@@ -759,14 +712,7 @@ iter_subscript_int(PyArrayIterObject *self, PyArrayObject *ind)
     swap = (PyArray_ISNOTSWAPPED(ret) != PyArray_ISNOTSWAPPED(self->ao));
     while (counter--) {
         num = *((npy_intp *)(ind_it->dataptr));
-        if (num < 0) {
-            num += self->size;
-        }
-        if (num < 0 || num >= self->size) {
-            PyErr_Format(PyExc_IndexError,
-                         "index %"INTP_FMT" out of bounds" \
-                         " 0<=index<%"INTP_FMT,
-                         num, self->size);
+        if (check_and_adjust_index(&num, self->size, -1) < 0) {
             Py_DECREF(ind_it);
             Py_DECREF(ret);
             PyArray_ITER_RESET(self);
@@ -842,7 +788,7 @@ iter_subscript(PyArrayIterObject *self, PyObject *ind)
     /* Check for Integer or Slice */
     if (PyLong_Check(ind) || PyInt_Check(ind) || PySlice_Check(ind)) {
         start = parse_index_entry(ind, &step_size, &n_steps,
-                               self->size);
+                                  self->size, 0, 1);
         if (start == -1) {
             goto fail;
         }
@@ -851,13 +797,13 @@ iter_subscript(PyArrayIterObject *self, PyObject *ind)
                             "cannot use Ellipsis or newaxes here");
             goto fail;
         }
-        PyArray_ITER_GOTO1D(self, start)
-            if (n_steps == SINGLE_INDEX) { /* Integer */
-                PyObject *tmp;
-                tmp = PyArray_ToScalar(self->dataptr, self->ao);
-                PyArray_ITER_RESET(self);
-                return tmp;
-            }
+        PyArray_ITER_GOTO1D(self, start);
+        if (n_steps == SINGLE_INDEX) { /* Integer */
+            PyObject *tmp;
+            tmp = PyArray_ToScalar(self->dataptr, self->ao);
+            PyArray_ITER_RESET(self);
+            return tmp;
+        }
         size = PyArray_DESCR(self->ao)->elsize;
         dtype = PyArray_DESCR(self->ao);
         Py_INCREF(dtype);
@@ -874,15 +820,15 @@ iter_subscript(PyArrayIterObject *self, PyObject *ind)
         while (n_steps--) {
             copyswap(dptr, self->dataptr, 0, ret);
             start += step_size;
-            PyArray_ITER_GOTO1D(self, start)
-                dptr += size;
+            PyArray_ITER_GOTO1D(self, start);
+            dptr += size;
         }
         PyArray_ITER_RESET(self);
         return (PyObject *)ret;
     }
 
     /* convert to INTP array if Integer array scalar or List */
-    indtype = PyArray_DescrFromType(PyArray_INTP);
+    indtype = PyArray_DescrFromType(NPY_INTP);
     if (PyArray_IsScalar(ind, Integer) || PyList_Check(ind)) {
         Py_INCREF(indtype);
         obj = PyArray_FromAny(ind, indtype, 0, 0, NPY_ARRAY_FORCECAST, NULL);
@@ -964,7 +910,7 @@ iter_ass_sub_Bool(PyArrayIterObject *self, PyArrayObject *ind,
     /* Loop over Boolean array */
     copyswap = PyArray_DESCR(self->ao)->f->copyswap;
     while (counter--) {
-        if (*((Bool *)dptr) != 0) {
+        if (*((npy_bool *)dptr) != 0) {
             copyswap(self->dataptr, val->dataptr, swap, self->ao);
             PyArray_ITER_NEXT(val);
             if (val->index == val->size) {
@@ -990,6 +936,9 @@ iter_ass_sub_int(PyArrayIterObject *self, PyArrayObject *ind,
     copyswap = PyArray_DESCR(self->ao)->f->copyswap;
     if (PyArray_NDIM(ind) == 0) {
         num = *((npy_intp *)PyArray_DATA(ind));
+        if (check_and_adjust_index(&num, self->size, -1) < 0) {
+            return -1;
+        }
         PyArray_ITER_GOTO1D(self, num);
         copyswap(self->dataptr, val->dataptr, swap, self->ao);
         return 0;
@@ -1001,14 +950,7 @@ iter_ass_sub_int(PyArrayIterObject *self, PyArrayObject *ind,
     counter = ind_it->size;
     while (counter--) {
         num = *((npy_intp *)(ind_it->dataptr));
-        if (num < 0) {
-            num += self->size;
-        }
-        if ((num < 0) || (num >= self->size)) {
-            PyErr_Format(PyExc_IndexError,
-                         "index %"INTP_FMT" out of bounds"           \
-                         " 0<=index<%"INTP_FMT, num,
-                         self->size);
+        if (check_and_adjust_index(&num, self->size, -1) < 0) {
             Py_DECREF(ind_it);
             return -1;
         }
@@ -1037,6 +979,15 @@ iter_ass_subscript(PyArrayIterObject *self, PyObject *ind, PyObject *val)
     PyObject *obj = NULL;
     PyArray_CopySwapFunc *copyswap;
 
+
+    if (val == NULL) {
+        PyErr_SetString(PyExc_TypeError,
+                "Cannot delete iterator elements");
+        return -1;
+    }
+    
+    if (PyArray_FailUnlessWriteable(self->ao, "underlying array") < 0) 
+        return -1;
 
     if (ind == Py_Ellipsis) {
         ind = PySlice_New(NULL, NULL, NULL);
@@ -1076,10 +1027,7 @@ iter_ass_subscript(PyArrayIterObject *self, PyObject *ind, PyObject *val)
         PyErr_Clear();
     }
     else {
-        if (start < -self->size || start >= self->size) {
-            PyErr_Format(PyExc_ValueError,
-                         "index (%" NPY_INTP_FMT \
-                         ") out of range", start);
+        if (check_and_adjust_index(&start, self->size, -1) < 0) {
             goto finish;
         }
         retval = 0;
@@ -1113,7 +1061,7 @@ iter_ass_subscript(PyArrayIterObject *self, PyObject *ind, PyObject *val)
 
     /* Check Slice */
     if (PySlice_Check(ind)) {
-        start = parse_index_entry(ind, &step_size, &n_steps, self->size);
+        start = parse_index_entry(ind, &step_size, &n_steps, self->size, 0, 0);
         if (start == -1) {
             goto finish;
         }
@@ -1145,7 +1093,7 @@ iter_ass_subscript(PyArrayIterObject *self, PyObject *ind, PyObject *val)
     }
 
     /* convert to INTP array if Integer array scalar or List */
-    indtype = PyArray_DescrFromType(PyArray_INTP);
+    indtype = PyArray_DescrFromType(NPY_INTP);
     if (PyList_Check(ind)) {
         Py_INCREF(indtype);
         obj = PyArray_FromAny(ind, indtype, 0, 0, NPY_ARRAY_FORCECAST, NULL);
@@ -1157,7 +1105,7 @@ iter_ass_subscript(PyArrayIterObject *self, PyObject *ind, PyObject *val)
 
     if (obj != NULL && PyArray_Check(obj)) {
         /* Check for Boolean object */
-        if (PyArray_TYPE((PyArrayObject *)obj)==PyArray_BOOL) {
+        if (PyArray_TYPE((PyArrayObject *)obj)==NPY_BOOL) {
             if (iter_ass_sub_Bool(self, (PyArrayObject *)obj,
                                   val_it, swap) < 0) {
                 goto finish;
@@ -1219,10 +1167,13 @@ iter_array(PyArrayIterObject *it, PyObject *NPY_UNUSED(op))
 
     /* Two options:
      *  1) underlying array is contiguous
-     *  -- return 1-d wrapper around it
-     * 2) underlying array is not contiguous
-     * -- make new 1-d contiguous array with updateifcopy flag set
-     * to copy back to the old array
+     *     -- return 1-d wrapper around it
+     *  2) underlying array is not contiguous
+     *     -- make new 1-d contiguous array with updateifcopy flag set
+     *        to copy back to the old array
+     * 
+     *  If underlying array is readonly, then we make the output array readonly
+     *     and updateifcopy does not apply. 
      */
     size = PyArray_SIZE(it->ao);
     Py_INCREF(PyArray_DESCR(it->ao));
@@ -1255,14 +1206,16 @@ iter_array(PyArrayIterObject *it, PyObject *NPY_UNUSED(op))
             Py_DECREF(ret);
             return NULL;
         }
-        /*
-         * Don't use PyArray_SetBaseObject, because that compresses
-         * the chain of bases.
-         */
-        Py_INCREF(it->ao);
-        ((PyArrayObject_fields *)ret)->base = (PyObject *)it->ao;
-        PyArray_ENABLEFLAGS(ret, NPY_ARRAY_UPDATEIFCOPY);
-        PyArray_CLEARFLAGS(it->ao, NPY_ARRAY_WRITEABLE);
+        if (PyArray_ISWRITEABLE(it->ao)) {
+            Py_INCREF(it->ao);
+            if (PyArray_SetUpdateIfCopyBase(ret, it->ao) < 0) {
+                Py_DECREF(ret);
+                return NULL;
+            }
+        }
+        else {
+            PyArray_CLEARFLAGS(ret, NPY_ARRAY_WRITEABLE);
+        }
     }
     return ret;
 
@@ -1425,7 +1378,7 @@ PyArray_Broadcast(PyArrayMultiIterObject *mit)
 
     /* Discover the broadcast number of dimensions */
     for (i = 0, nd = 0; i < mit->numiter; i++) {
-        nd = MAX(nd, PyArray_NDIM(mit->iters[i]->ao));
+        nd = PyArray_MAX(nd, PyArray_NDIM(mit->iters[i]->ao));
     }
     mit->nd = nd;
 
@@ -1724,14 +1677,14 @@ arraymultiter_dealloc(PyArrayMultiIterObject *multi)
 static PyObject *
 arraymultiter_size_get(PyArrayMultiIterObject *self)
 {
-#if SIZEOF_INTP <= SIZEOF_LONG
+#if NPY_SIZEOF_INTP <= SIZEOF_LONG
     return PyInt_FromLong((long) self->size);
 #else
-    if (self->size < MAX_LONG) {
+    if (self->size < NPY_MAX_LONG) {
         return PyInt_FromLong((long) self->size);
     }
     else {
-        return PyLong_FromLongLong((longlong) self->size);
+        return PyLong_FromLongLong((npy_longlong) self->size);
     }
 #endif
 }
@@ -1739,14 +1692,14 @@ arraymultiter_size_get(PyArrayMultiIterObject *self)
 static PyObject *
 arraymultiter_index_get(PyArrayMultiIterObject *self)
 {
-#if SIZEOF_INTP <= SIZEOF_LONG
+#if NPY_SIZEOF_INTP <= SIZEOF_LONG
     return PyInt_FromLong((long) self->index);
 #else
-    if (self->size < MAX_LONG) {
+    if (self->size < NPY_MAX_LONG) {
         return PyInt_FromLong((long) self->index);
     }
     else {
-        return PyLong_FromLongLong((longlong) self->index);
+        return PyLong_FromLongLong((npy_longlong) self->index);
     }
 #endif
 }
@@ -2138,7 +2091,7 @@ PyArray_NeighborhoodIterNew(PyArrayIterObject *x, npy_intp *bounds,
 clean_x:
     Py_DECREF(ret->_internal_iter);
     array_iter_base_dealloc((PyArrayIterObject*)ret);
-    _pya_free((PyArrayObject*)ret);
+    PyArray_free((PyArrayObject*)ret);
     return NULL;
 }
 
@@ -2155,7 +2108,7 @@ static void neighiter_dealloc(PyArrayNeighborhoodIterObject* iter)
     Py_DECREF(iter->_internal_iter);
 
     array_iter_base_dealloc((PyArrayIterObject*)iter);
-    _pya_free((PyArrayObject*)iter);
+    PyArray_free((PyArrayObject*)iter);
 }
 
 NPY_NO_EXPORT PyTypeObject PyArrayNeighborhoodIter_Type = {

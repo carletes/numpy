@@ -1,4 +1,3 @@
-
 /* -*- c -*- */
 
 /*
@@ -6,10 +5,10 @@
  * configuration files before the libraries are made.
  */
 
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 
 #include <Python.h>
-#include <numpy/npy_3kcompat.h>
+#include <npy_pycompat.h>
 
 static struct PyMethodDef methods[] = {
     {NULL, NULL, 0, NULL}
@@ -32,7 +31,7 @@ static struct PyModuleDef moduledef = {
 
 /* Initialization function for the module */
 #if defined(NPY_PY3K)
-PyObject *PyInit__dummy(void) {
+PyMODINIT_FUNC PyInit__dummy(void) {
     PyObject *m;
     m = PyModule_Create(&moduledef);
     if (!m) {

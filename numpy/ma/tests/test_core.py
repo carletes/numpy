@@ -18,6 +18,7 @@ import numpy.ma.core
 from numpy.ma.core import *
 
 from numpy.compat import asbytes, asbytes_nested
+from numpy.testing.utils import WarningManager
 
 pi = np.pi
 
@@ -384,6 +385,16 @@ class TestMaskedArray(TestCase):
         assert_equal(a_pickled, a)
         self.assertTrue(isinstance(a_pickled._data, np.matrix))
 
+    def test_pickling_maskedconstant(self):
+        "Test pickling MaskedConstant"
+
+        import cPickle
+        mc = np.ma.masked
+        mc_pickled = cPickle.loads(mc.dumps())
+        assert_equal(mc_pickled._baseclass, mc._baseclass)
+        assert_equal(mc_pickled._mask, mc._mask)
+        assert_equal(mc_pickled._data, mc._data)
+
     def test_pickling_wstructured(self):
         "Tests pickling w/ structured array"
         import cPickle
@@ -426,9 +437,13 @@ class TestMaskedArray(TestCase):
         assert_equal(1.0, float(array([[1]])))
         self.assertRaises(TypeError, float, array([1, 1]))
         #
-        warnings.simplefilter('ignore', UserWarning)
-        assert_(np.isnan(float(array([1], mask=[1]))))
-        warnings.simplefilter('default', UserWarning)
+        warn_ctx = WarningManager()
+        warn_ctx.__enter__()
+        try:
+            warnings.simplefilter('ignore', UserWarning)
+            assert_(np.isnan(float(array([1], mask=[1]))))
+        finally:
+            warn_ctx.__exit__()
         #
         a = array([1, 2, 3], mask=[1, 0, 0])
         self.assertRaises(TypeError, lambda:float(a))
@@ -806,6 +821,8 @@ class TestMaskedArrayArithmetic(TestCase):
         assert_equal(np.arctan(z), arctan(zm))
         assert_equal(np.arctan2(x, y), arctan2(xm, ym))
         assert_equal(np.absolute(x), absolute(xm))
+        assert_equal(np.angle(x + 1j*y), angle(xm + 1j*ym))
+        assert_equal(np.angle(x + 1j*y, deg=True), angle(xm + 1j*ym, deg=True))
         assert_equal(np.equal(x, y), equal(xm, ym))
         assert_equal(np.not_equal(x, y), not_equal(xm, ym))
         assert_equal(np.less(x, y), less(xm, ym))

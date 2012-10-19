@@ -115,7 +115,7 @@ SUPERPACK_BUILD = 'build-superpack'
 SUPERPACK_BINDIR = os.path.join(SUPERPACK_BUILD, 'binaries')
 
 options(bootstrap=Bunch(bootstrap_dir="bootstrap"),
-        virtualenv=Bunch(packages_to_install=["sphinx==1.0.4", "numpydoc"],
+        virtualenv=Bunch(packages_to_install=["sphinx==1.1.3", "numpydoc"],
                          no_site_packages=False),
         sphinx=Bunch(builddir="build", sourcedir="source", docroot='doc'),
         superpack=Bunch(builddir="build-superpack"),
@@ -140,9 +140,9 @@ MPKG_PYTHON = {
         "3.2": ["/Library/Frameworks/Python.framework/Versions/3.2/bin/python3"],
 }
 
-SSE3_CFG = {'ATLAS': r'C:\local\lib\yop\sse3'}
-SSE2_CFG = {'ATLAS': r'C:\local\lib\yop\sse2'}
-NOSSE_CFG = {'BLAS': r'C:\local\lib\yop\nosse', 'LAPACK': r'C:\local\lib\yop\nosse'}
+SSE3_CFG = {'ATLAS': r'C:\local\lib\atlas\sse3'}
+SSE2_CFG = {'ATLAS': r'C:\local\lib\atlas\sse2'}
+NOSSE_CFG = {'BLAS': r'C:\local\lib\atlas\nosse', 'LAPACK': r'C:\local\lib\atlas\nosse'}
 
 SITECFG = {"sse2" : SSE2_CFG, "sse3" : SSE3_CFG, "nosse" : NOSSE_CFG}
 

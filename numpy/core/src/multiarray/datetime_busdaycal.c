@@ -11,12 +11,12 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #define _MULTIARRAYMODULE
 #include <numpy/arrayobject.h>
 
 #include "npy_config.h"
-#include "numpy/npy_3kcompat.h"
+#include "npy_pycompat.h"
 
 #include "numpy/arrayscalars.h"
 #include "lowlevel_strided_loops.h"

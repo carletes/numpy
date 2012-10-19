@@ -12,9 +12,9 @@
 #include "Python.h"
 #include "structmember.h"
 
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #define _MULTIARRAYMODULE
-#include <numpy/ndarrayobject.h>
+#include <numpy/arrayobject.h>
 #include <numpy/npy_cpu.h>
 #include <numpy/halffloat.h>
 
@@ -151,7 +151,7 @@ static void
 #else
 
         /* unaligned copy and swap */
-        memcpy(dst, src, @elsize@);
+        memmove(dst, src, @elsize@);
 #  if @is_swap@ == 1
         @swap@@elsize@(dst);
 #  elif @is_swap@ == 2
@@ -239,7 +239,7 @@ _strided_to_strided(char *dst, npy_intp dst_stride,
                         NpyAuxData *NPY_UNUSED(data))
 {
     while (N > 0) {
-        memcpy(dst, src, src_itemsize);
+        memmove(dst, src, src_itemsize);
         dst += dst_stride;
         src += src_stride;
         --N;
@@ -255,7 +255,7 @@ _swap_strided_to_strided(char *dst, npy_intp dst_stride,
     char *a, *b, c;
 
     while (N > 0) {
-        memcpy(dst, src, src_itemsize);
+        memmove(dst, src, src_itemsize);
         /* general in-place swap */
         a = dst;
         b = dst + src_itemsize - 1;
@@ -281,7 +281,7 @@ _swap_pair_strided_to_strided(char *dst, npy_intp dst_stride,
     npy_intp itemsize_half = src_itemsize / 2;
 
     while (N > 0) {
-        memcpy(dst, src, src_itemsize);
+        memmove(dst, src, src_itemsize);
         /* general in-place swap */
         a = dst;
         b = dst + itemsize_half - 1;
@@ -312,7 +312,7 @@ _contig_to_contig(char *dst, npy_intp NPY_UNUSED(dst_stride),
                         npy_intp N, npy_intp src_itemsize,
                         NpyAuxData *NPY_UNUSED(data))
 {
-    memcpy(dst, src, src_itemsize*N);
+    memmove(dst, src, src_itemsize*N);
 }
 
 
@@ -658,11 +658,16 @@ NPY_NO_EXPORT PyArray_StridedUnaryOp *
  *          byte, short, int, long, longlong,
  *          half, float, double, longdouble,
  *          cfloat, cdouble, clongdouble#
- * #rname1 = bool,
- *          ubyte, ushort, uint, ulong, ulonglong,
- *          byte, short, int, long, longlong,
- *          half, float, double, longdouble,
- *          float, double, longdouble#
+ * #type1 = npy_bool,
+ *          npy_ubyte, npy_ushort, npy_uint, npy_ulong, npy_ulonglong,
+ *          npy_byte, npy_short, npy_int, npy_long, npy_longlong,
+ *          npy_half, npy_float, npy_double, npy_longdouble,
+ *          npy_cfloat, npy_cdouble, npy_clongdouble#
+ * #rtype1 = npy_bool,
+ *           npy_ubyte, npy_ushort, npy_uint, npy_ulong, npy_ulonglong,
+ *           npy_byte, npy_short, npy_int, npy_long, npy_longlong,
+ *           npy_half, npy_float, npy_double, npy_longdouble,
+ *           npy_float, npy_double, npy_longdouble#
  * #is_bool1 = 1, 0*17#
  * #is_half1 = 0*11, 1, 0*6#
  * #is_float1 = 0*12, 1, 0, 0, 1, 0, 0#
@@ -682,11 +687,16 @@ NPY_NO_EXPORT PyArray_StridedUnaryOp *
  *          byte, short, int, long, longlong,
  *          half, float, double, longdouble,
  *          cfloat, cdouble, clongdouble#
- * #rname2 = bool,
- *          ubyte, ushort, uint, ulong, ulonglong,
- *          byte, short, int, long, longlong,
- *          half, float, double, longdouble,
- *          float, double, longdouble#
+ * #type2 = npy_bool,
+ *          npy_ubyte, npy_ushort, npy_uint, npy_ulong, npy_ulonglong,
+ *          npy_byte, npy_short, npy_int, npy_long, npy_longlong,
+ *          npy_half, npy_float, npy_double, npy_longdouble,
+ *          npy_cfloat, npy_cdouble, npy_clongdouble#
+ * #rtype2 = npy_bool,
+ *          npy_ubyte, npy_ushort, npy_uint, npy_ulong, npy_ulonglong,
+ *          npy_byte, npy_short, npy_int, npy_long, npy_longlong,
+ *          npy_half, npy_float, npy_double, npy_longdouble,
+ *          npy_float, npy_double, npy_longdouble#
  * #is_bool2 = 1, 0*17#
  * #is_half2 = 0*11, 1, 0*6#
  * #is_float2 = 0*12, 1, 0, 0, 1, 0, 0#
@@ -710,7 +720,7 @@ NPY_NO_EXPORT PyArray_StridedUnaryOp *
 #  elif @is_double1@
 #    define _TYPE1 npy_uint64
 #  else
-#    define _TYPE1 npy_@rname1@
+#    define _TYPE1 @rtype1@
 #  endif
 
 #  if @is_float2@
@@ -718,13 +728,13 @@ NPY_NO_EXPORT PyArray_StridedUnaryOp *
 #  elif @is_double2@
 #    define _TYPE2 npy_uint64
 #  else
-#    define _TYPE2 npy_@rname2@
+#    define _TYPE2 @rtype2@
 #  endif
 
 #else
 
-#define _TYPE1 npy_@rname1@
-#define _TYPE2 npy_@rname2@
+#define _TYPE1 @rtype1@
+#define _TYPE2 @rtype2@
 
 #endif
 
@@ -792,7 +802,7 @@ static void
         src_value = *((_TYPE1 *)src);
 #  endif
 #else
-        memcpy(&src_value, src, sizeof(src_value));
+        memmove(&src_value, src, sizeof(src_value));
 #endif
 
 /* Do the cast */
@@ -801,9 +811,17 @@ static void
     dst_value[0] = _CONVERT_FN(src_value[0]);
     dst_value[1] = _CONVERT_FN(src_value[1]);
 #  elif !@aligned@
-    dst_value = _CONVERT_FN(src_value[0]);
+#    if @is_bool2@
+       dst_value = _CONVERT_FN(src_value[0]) || _CONVERT_FN(src_value[1]);
+#    else
+       dst_value = _CONVERT_FN(src_value[0]);
+#    endif
 #  else
-    *(_TYPE2 *)dst = _CONVERT_FN(src_value[0]);
+#    if @is_bool2@
+       *(_TYPE2 *)dst = _CONVERT_FN(src_value[0]) || _CONVERT_FN(src_value[1]);
+#    else
+       *(_TYPE2 *)dst = _CONVERT_FN(src_value[0]);
+#    endif
 #  endif
 #else
 #  if @is_complex2@
@@ -828,12 +846,12 @@ static void
         *((_TYPE2 *)dst) = dst_value;
 #  endif
 #else
-        memcpy(dst, &dst_value, sizeof(dst_value));
+        memmove(dst, &dst_value, sizeof(dst_value));
 #endif
 
 #if @contig@
-        dst += sizeof(npy_@name2@);
-        src += sizeof(npy_@name1@);
+        dst += sizeof(@type2@);
+        src += sizeof(@type1@);
 #else
         dst += dst_stride;
         src += src_stride;
@@ -871,6 +889,11 @@ PyArray_GetStridedNumericCastFn(int aligned, npy_intp src_stride,
  *          byte, short, int, long, longlong,
  *          half, float, double, longdouble,
  *          cfloat, cdouble, clongdouble#
+ * #type1 = npy_bool,
+ *          npy_ubyte, npy_ushort, npy_uint, npy_ulong, npy_ulonglong,
+ *          npy_byte, npy_short, npy_int, npy_long, npy_longlong,
+ *          npy_half, npy_float, npy_double, npy_longdouble,
+ *          npy_cfloat, npy_cdouble, npy_clongdouble#
  */
 
         case NPY_@NAME1@:
@@ -888,21 +911,26 @@ PyArray_GetStridedNumericCastFn(int aligned, npy_intp src_stride,
  *          byte, short, int, long, longlong,
  *          half, float, double, longdouble,
  *          cfloat, cdouble, clongdouble#
+ * #type2 = npy_bool,
+ *          npy_ubyte, npy_ushort, npy_uint, npy_ulong, npy_ulonglong,
+ *          npy_byte, npy_short, npy_int, npy_long, npy_longlong,
+ *          npy_half, npy_float, npy_double, npy_longdouble,
+ *          npy_cfloat, npy_cdouble, npy_clongdouble#
  */
 
                 case NPY_@NAME2@:
                     /*printf("ret fn %d %d\n", NPY_@NAME1@, NPY_@NAME2@);*/
 #  if NPY_USE_UNALIGNED_ACCESS
-                    if (src_stride == sizeof(npy_@name1@) &&
-                                dst_stride == sizeof(npy_@name2@)) {
+                    if (src_stride == sizeof(@type1@) &&
+                                dst_stride == sizeof(@type2@)) {
                         return &_aligned_contig_cast_@name1@_to_@name2@;
                     }
                     else {
                         return &_aligned_cast_@name1@_to_@name2@;
                     }
 #  else
-                    if (src_stride == sizeof(npy_@name1@) &&
-                                dst_stride == sizeof(npy_@name2@)) {
+                    if (src_stride == sizeof(@type1@) &&
+                                dst_stride == sizeof(@type2@)) {
                         return aligned ?
                                     &_aligned_contig_cast_@name1@_to_@name2@ :
                                     &_contig_cast_@name1@_to_@name2@;

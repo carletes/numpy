@@ -11,12 +11,12 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #define _MULTIARRAYMODULE
 #include <numpy/ndarraytypes.h>
 
 #include "npy_config.h"
-#include "numpy/npy_3kcompat.h"
+#include "npy_pycompat.h"
 
 #include "shape.h"
 
@@ -73,6 +73,7 @@ broadcast_error: {
         PyUString_ConcatAndDel(&errmsg,
                 build_shape_string(ndim, shape));
         PyErr_SetObject(PyExc_ValueError, errmsg);
+        Py_DECREF(errmsg);
 
         return -1;
    }

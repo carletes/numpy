@@ -1,9 +1,8 @@
 import os
 import sys
 
-from bento.commands.hooks \
-    import \
-        pre_configure, pre_build, post_build
+from bento.commands import hooks
+
 import waflib
 import waflib.Errors
 from waflib.Task \
@@ -31,7 +30,11 @@ from setup_common \
         C99_FUNCS_SINGLE, C99_COMPLEX_TYPES, C99_COMPLEX_FUNCS, \
         MANDATORY_FUNCS, C_ABI_VERSION, C_API_VERSION
 
-ENABLE_SEPARATE_COMPILATION = False
+try:
+    val = os.environ['NPY_SEPARATE_COMPILATION']
+    ENABLE_SEPARATE_COMPILATION = (val != "0")
+except KeyError:
+    ENABLE_SEPARATE_COMPILATION = False
 
 NUMPYCONFIG_SYM = []
 
@@ -88,7 +91,7 @@ def write_numpy_config(conf):
     for k, v in subst_dict.items():
         cnt = cnt.replace(k, v)
     assert node is not None
-    onode = conf.bldnode.find_or_declare(node.path_from(conf.srcnode)).change_ext("")
+    onode = conf.bldnode.make_node(node.path_from(conf.srcnode)).change_ext("")
     onode.write(cnt)
 
 def type_checks(conf):
@@ -263,8 +266,8 @@ def check_win32_specifics(conf):
     if arch == "Intel" or arch == "AMD64":
         conf.define('FORCE_NO_LONG_DOUBLE_FORMATTING', 1)
 
-@pre_configure
-def configure(context):
+@hooks.post_configure
+def post_configure(context):
     conf = context.waf_context
 
     try:
@@ -354,6 +357,10 @@ def process_multiarray_api_generator(self):
     txt = self.pattern + ".txt"
     files = [header, source, txt]
     tsk.set_outputs([self.path.find_or_declare(f) for f in files])
+
+    self.bld.register_outputs("numpy_gen_headers", "multiarray",
+                              [output for output in tsk.outputs if output.suffix() == ".h"],
+                              target_dir="$sitedir/numpy/core/include/numpy")
     return tsk
 
 @waflib.TaskGen.feature("ufunc_api_gen")
@@ -369,6 +376,10 @@ def process_api_ufunc_generator(self):
     txt = self.pattern + ".txt"
     files = [header, source, txt]
     tsk.set_outputs([self.path.find_or_declare(f) for f in files])
+
+    headers = [output for output in tsk.outputs if output.suffix() == ".h"]
+    self.bld.register_outputs("numpy_gen_headers", "ufunc", headers,
+                              target_dir="$sitedir/numpy/core/include/numpy")
     return tsk
 
 class umath_generator(Task):
@@ -391,23 +402,20 @@ def process_umath_generator(self):
     return tsk
 
 from os.path import join as pjoin
-@pre_build
-def pbuild(context):
+@hooks.pre_build
+def pre_build(context):
     bld = context.waf_context
 
-    def builder(library):
-        # FIXME: hack to build static library that can be linked into a dlopen-able
-        # library
-        return context.default_library_builder(library,
-                                               includes=["src/private", "src/npymath", "include"],
-                                               use="cshlib")
-    context.register_compiled_library_builder("npymath", builder)
+    context.register_category("numpy_gen_headers")
 
-    def builder_sort(library):
-        return context.default_library_builder(library,
-                                               includes=[".", "src/private", "src/npysort"],
-                                               use="npymath")
-    context.register_compiled_library_builder("npysort", builder_sort)
+    numpyconfig_h = context.local_node.declare(os.path.join("include", "numpy", "_numpyconfig.h"))
+    context.register_outputs("numpy_gen_headers", "numpyconfig", [numpyconfig_h])
+
+    context.tweak_library("lib/npymath", includes=["src/private", "src/npymath", "include"])
+
+    context.tweak_library("npysort",
+                          includes=[".", "src/private", "src/npysort"],
+                          use="npymath")
 
     def builder_multiarray(extension):
         bld(name="multiarray_api",
@@ -416,49 +424,46 @@ def pbuild(context):
             pattern="multiarray_api")
 
         multiarray_templates = ["src/multiarray/scalartypes.c.src",
-                "src/multiarray/arraytypes.c.src", 
+                "src/multiarray/arraytypes.c.src",
                 "src/multiarray/nditer_templ.c.src",
-                "src/multiarray/lowlevel_strided_loops.c.src", 
-                "src/multiarray/einsum.c.src",
-                "src/multiarray/boolean_ops.c.src"]
+                "src/multiarray/lowlevel_strided_loops.c.src",
+                "src/multiarray/einsum.c.src"]
         bld(target="multiarray_templates", source=multiarray_templates)
         if ENABLE_SEPARATE_COMPILATION:
-            sources = [pjoin('src', 'multiarray', 'multiarraymodule.c'),
-                pjoin('src', 'multiarray', 'boolean_ops.c.src'),
-                pjoin('src', 'multiarray', 'hashdescr.c'),
-                pjoin('src', 'multiarray', 'arrayobject.c'),
-                pjoin('src', 'multiarray', 'numpymemoryview.c'),
+            sources = [pjoin('src', 'multiarray', 'arrayobject.c'),
+                pjoin('src', 'multiarray', 'arraytypes.c.src'),
                 pjoin('src', 'multiarray', 'buffer.c'),
-                pjoin('src', 'multiarray', 'datetime.c'),
-                pjoin('src', 'multiarray', 'numpyos.c'),
-                pjoin('src', 'multiarray', 'conversion_utils.c'),
-                pjoin('src', 'multiarray', 'flagsobject.c'),
-                pjoin('src', 'multiarray', 'descriptor.c'),
-                pjoin('src', 'multiarray', 'iterators.c'),
-                pjoin('src', 'multiarray', 'mapping.c'),
-                pjoin('src', 'multiarray', 'number.c'),
-                pjoin('src', 'multiarray', 'getset.c'),
-                pjoin('src', 'multiarray', 'sequence.c'),
-                pjoin('src', 'multiarray', 'methods.c'),
-                pjoin('src', 'multiarray', 'ctors.c'),
-                pjoin('src', 'multiarray', 'convert_datatype.c'),
-                pjoin('src', 'multiarray', 'convert.c'),
-                pjoin('src', 'multiarray', 'shape.c'),
-                pjoin('src', 'multiarray', 'item_selection.c'),
                 pjoin('src', 'multiarray', 'calculation.c'),
                 pjoin('src', 'multiarray', 'common.c'),
-                pjoin('src', 'multiarray', 'usertypes.c'),
-                pjoin('src', 'multiarray', 'scalarapi.c'),
-                pjoin('src', 'multiarray', 'refcount.c'),
-                pjoin('src', 'multiarray', 'arraytypes.c.src'),
-                pjoin('src', 'multiarray', 'scalartypes.c.src'),
-                pjoin('src', 'multiarray', 'nditer_templ.c.src'),
-                pjoin('src', 'multiarray', 'lowlevel_strided_loops.c.src'),
+                pjoin('src', 'multiarray', 'conversion_utils.c'),
+                pjoin('src', 'multiarray', 'convert.c'),
+                pjoin('src', 'multiarray', 'convert_datatype.c'),
+                pjoin('src', 'multiarray', 'ctors.c'),
+                pjoin('src', 'multiarray', 'datetime.c'),
+                pjoin('src', 'multiarray', 'descriptor.c'),
                 pjoin('src', 'multiarray', 'dtype_transfer.c'),
+                pjoin('src', 'multiarray', 'einsum.c.src'),
+                pjoin('src', 'multiarray', 'flagsobject.c'),
+                pjoin('src', 'multiarray', 'getset.c'),
+                pjoin('src', 'multiarray', 'hashdescr.c'),
+                pjoin('src', 'multiarray', 'item_selection.c'),
+                pjoin('src', 'multiarray', 'iterators.c'),
+                pjoin('src', 'multiarray', 'lowlevel_strided_loops.c.src'),
+                pjoin('src', 'multiarray', 'mapping.c'),
+                pjoin('src', 'multiarray', 'methods.c'),
+                pjoin('src', 'multiarray', 'multiarraymodule.c'),
                 pjoin('src', 'multiarray', 'nditer_pywrap.c'),
-                pjoin('src', 'multiarray', 'einsum.c.src')]
-            if PYTHON_HAS_UNICODE_WIDE:
-                sources.append(pjoin('src', 'multiarray', 'ucsnarrow.c'))
+                pjoin('src', 'multiarray', 'nditer_templ.c.src'),
+                pjoin('src', 'multiarray', 'number.c'),
+                pjoin('src', 'multiarray', 'numpymemoryview.c'),
+                pjoin('src', 'multiarray', 'numpyos.c'),
+                pjoin('src', 'multiarray', 'refcount.c'),
+                pjoin('src', 'multiarray', 'scalarapi.c'),
+                pjoin('src', 'multiarray', 'scalartypes.c.src'),
+                pjoin('src', 'multiarray', 'sequence.c'),
+                pjoin('src', 'multiarray', 'shape.c'),
+                pjoin('src', 'multiarray', 'ucsnarrow.c'),
+                pjoin('src', 'multiarray', 'usertypes.c')]
         else:
             sources = extension.sources
         includes = ["src/multiarray", "src/private"]
@@ -475,7 +480,6 @@ def pbuild(context):
             name="ufunc_api")
 
         ufunc_templates = ["src/umath/loops.c.src",
-                "src/umath/umathmodule.c.src",
                 "src/umath/funcs.inc.src"]
         bld(target="ufunc_templates", source=ufunc_templates)
 
@@ -485,7 +489,7 @@ def pbuild(context):
 
         includes = ["src/umath", "src/private"]
         if ENABLE_SEPARATE_COMPILATION:
-            sources = [pjoin("src", "umath", "umathmodule.c.src"),
+            sources = [pjoin("src", "umath", "umathmodule.c"),
                     pjoin("src", "umath", "ufunc_object.c"),
                     pjoin("src", "umath", "loops.c.src")]
         else:
@@ -496,18 +500,11 @@ def pbuild(context):
                                        use="npymath")
     context.register_builder("umath", build_ufunc)
 
-    def build_scalarmath(extension):
-        return context.default_builder(extension,
-                                       use="npymath")
-    context.register_builder("scalarmath", build_scalarmath)
-
-    def build_multiarray_tests(extension):
-        return context.default_builder(extension,
-                                       use="npymath")
-    context.register_builder("multiarray_tests", build_multiarray_tests)
+    context.tweak_extension("scalarmath", use="npymath", includes=["src/private"])
+    context.tweak_extension("multiarray_tests", use="npymath", includes=["src/private"])
+    context.tweak_extension("umath_tests", use="npymath", includes=["src/private"])
 
     def build_dotblas(extension):
         if bld.env.HAS_CBLAS:
-            return context.default_builder(extension,
-                                           use="CBLAS")
+            return context.default_builder(extension, use="CBLAS", includes=["src/private"])
     context.register_builder("_dotblas", build_dotblas)

@@ -1,8 +1,11 @@
 """ Test functions for linalg module
 """
+import sys
 
 import numpy as np
-from numpy.testing import *
+from numpy.testing import (TestCase, assert_, assert_equal, assert_raises,
+                           assert_array_equal, assert_almost_equal,
+                           run_module_suite)
 from numpy import array, single, double, csingle, cdouble, dot, identity
 from numpy import multiply, atleast_2d, inf, asarray, matrix
 from numpy import linalg
@@ -450,10 +453,44 @@ class TestMatrixRank(object):
         yield assert_equal, matrix_rank(1), 1
 
 
+def test_reduced_rank():
+    # Test matrices with reduced rank
+    rng = np.random.RandomState(20120714)
+    for i in range(100):
+        # Make a rank deficient matrix
+        X = rng.normal(size=(40, 10))
+        X[:, 0] = X[:, 1] + X[:, 2]
+        # Assert that matrix_rank detected deficiency
+        assert_equal(matrix_rank(X), 9)
+        X[:, 3] = X[:, 4] + X[:, 5]
+        assert_equal(matrix_rank(X), 8)
+
+
 class TestQR(TestCase):
     def test_qr_empty(self):
         a = np.zeros((0,2))
         self.assertRaises(linalg.LinAlgError, linalg.qr, a)
+
+
+def test_byteorder_check():
+    # Byte order check should pass for native order
+    if sys.byteorder == 'little':
+        native = '<'
+    else:
+        native = '>'
+
+    for dtt in (np.float32, np.float64):
+        arr = np.eye(4, dtype=dtt)
+        n_arr = arr.newbyteorder(native)
+        sw_arr = arr.newbyteorder('S').byteswap()
+        assert_equal(arr.dtype.byteorder, '=')
+        for routine in (linalg.inv, linalg.det, linalg.pinv):
+            # Normal call
+            res = routine(arr)
+            # Native but not '='
+            assert_array_equal(res, routine(n_arr))
+            # Swapped
+            assert_array_equal(res, routine(sw_arr))
 
 
 if __name__ == "__main__":

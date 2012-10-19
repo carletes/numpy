@@ -10,6 +10,7 @@ import re
 import sys
 import itertools
 import warnings
+import weakref
 from operator import itemgetter
 
 from cPickle import load as _cload, loads
@@ -108,7 +109,8 @@ class BagObj(object):
 
     """
     def __init__(self, obj):
-        self._obj = obj
+        # Use weakref to make NpzFile objects collectable by refcount
+        self._obj = weakref.proxy(obj)
     def __getattribute__(self, key):
         try:
             return object.__getattribute__(self, '_obj')[key]
@@ -212,6 +214,7 @@ class NpzFile(object):
         if self.fid is not None:
             self.fid.close()
             self.fid = None
+        self.f = None # break reference cycle
 
     def __del__(self):
         self.close()
@@ -271,7 +274,7 @@ class NpzFile(object):
 
 def load(file, mmap_mode=None):
     """
-    Load a pickled, ``.npy``, or ``.npz`` binary file.
+    Load an array(s) or pickled objects from .npy, .npz, or pickled files.
 
     Parameters
     ----------
@@ -280,13 +283,11 @@ def load(file, mmap_mode=None):
         If the filename extension is ``.gz``, the file is first decompressed.
     mmap_mode: {None, 'r+', 'r', 'w+', 'c'}, optional
         If not None, then memory-map the file, using the given mode
-        (see `numpy.memmap`).  The mode has no effect for pickled or
-        zipped files.
-        A memory-mapped array is stored on disk, and not directly loaded
-        into memory.  However, it can be accessed and sliced like any
-        ndarray.  Memory mapping is especially useful for accessing
-        small fragments of large files without reading the entire file
-        into memory.
+        (see `numpy.memmap` for a detailed description of the modes).
+        A memory-mapped array is kept on disk. However, it can be accessed
+        and sliced like any ndarray.  Memory mapping is especially useful for
+        accessing small fragments of large files without reading the entire
+        file into memory.
 
     Returns
     -------
@@ -306,9 +307,9 @@ def load(file, mmap_mode=None):
 
     Notes
     -----
-    - If the file contains pickle data, then whatever is stored in the
-      pickle is returned.
-    - If the file is a ``.npy`` file, then an array is returned.
+    - If the file contains pickle data, then whatever object is stored
+      in the pickle is returned.
+    - If the file is a ``.npy`` file, then a single array is returned.
     - If the file is a ``.npz`` file, then a dictionary-like object is
       returned, containing ``{filename: array}`` key-value pairs, one for
       each file in the archive.
@@ -318,7 +319,7 @@ def load(file, mmap_mode=None):
         with load('foo.npz') as data:
             a = data['a']
 
-      The underlyling file descriptor is always closed when exiting the with block.
+      The underlyling file descriptor is closed when exiting the 'with' block.
 
     Examples
     --------
@@ -331,8 +332,10 @@ def load(file, mmap_mode=None):
 
     Store compressed data to disk, and load it again:
 
-    >>> np.savez('/tmp/123.npz', a=np.array([[1, 2, 3], [4, 5, 6]]), b=np.array([1, 2]))
-    >>> data = np.load('/tmp/123.npy')
+    >>> a=np.array([[1, 2, 3], [4, 5, 6]])
+    >>> b=np.array([1, 2])
+    >>> np.savez('/tmp/123.npz', a=a, b=b)
+    >>> data = np.load('/tmp/123.npz')
     >>> data['a']
     array([[1, 2, 3],
            [4, 5, 6]])
@@ -356,7 +359,6 @@ def load(file, mmap_mode=None):
         own_fid = True
     elif isinstance(file, gzip.GzipFile):
         fid = seek_gzip_factory(file)
-        own_fid = True
     else:
         fid = file
 
@@ -368,7 +370,7 @@ def load(file, mmap_mode=None):
         fid.seek(-N, 1) # back-up
         if magic.startswith(_ZIP_PREFIX):  # zip-file (assume .npz)
             own_fid = False
-            return NpzFile(fid, own_fid=True)
+            return NpzFile(fid, own_fid=own_fid)
         elif magic == format.MAGIC_PREFIX: # .npy file
             if mmap_mode:
                 return format.open_memmap(file, mode=mmap_mode)
@@ -451,12 +453,12 @@ def savez(file, *args, **kwds):
         Either the file name (string) or an open file (file-like object)
         where the data will be saved. If file is a string, the ``.npz``
         extension will be appended to the file name if it is not already there.
-    *args : Arguments, optional
+    args : Arguments, optional
         Arrays to save to the file. Since it is not possible for Python to
         know the names of the arrays outside `savez`, the arrays will be saved
         with names "arr_0", "arr_1", and so on. These arguments can be any
         expression.
-    **kwds : Keyword arguments, optional
+    kwds : Keyword arguments, optional
         Arrays to save to the file. Arrays will be saved in the file with the
         keyword names.
 
@@ -468,6 +470,7 @@ def savez(file, *args, **kwds):
     --------
     save : Save a single array to a binary file in NumPy format.
     savetxt : Save an array to a file as plain text.
+    savez_compressed : Save several arrays into a compressed .npz file format
 
     Notes
     -----
@@ -488,7 +491,7 @@ def savez(file, *args, **kwds):
     >>> x = np.arange(10)
     >>> y = np.sin(x)
 
-    Using `savez` with *args, the arrays are saved with default names.
+    Using `savez` with \\*args, the arrays are saved with default names.
 
     >>> np.savez(outfile, x, y)
     >>> outfile.seek(0) # Only needed here to simulate closing & reopening file
@@ -498,7 +501,7 @@ def savez(file, *args, **kwds):
     >>> npzfile['arr_0']
     array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
 
-    Using `savez` with **kwds, the arrays are saved with the keyword names.
+    Using `savez` with \\**kwds, the arrays are saved with the keyword names.
 
     >>> outfile = TemporaryFile()
     >>> np.savez(outfile, x=x, y=y)
@@ -508,10 +511,6 @@ def savez(file, *args, **kwds):
     ['y', 'x']
     >>> npzfile['x']
     array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
-
-    See Also
-    --------
-    numpy.savez_compressed : Save several arrays into a compressed .npz file format
 
     """
     _savez(file, args, kwds, False)
@@ -880,25 +879,32 @@ def savetxt(fname, X, fmt='%.18e', delimiter=' ', newline='\n', header='',
     fmt : str or sequence of strs, optional
         A single format (%10.5f), a sequence of formats, or a
         multi-format string, e.g. 'Iteration %d -- %10.5f', in which
-        case `delimiter` is ignored.
+        case `delimiter` is ignored. For complex `X`, the legal options
+        for `fmt` are:
+            a) a single specifier, `fmt='%.4e'`, resulting in numbers formatted
+                like `' (%s+%sj)' % (fmt, fmt)`
+            b) a full string specifying every real and imaginary part, e.g.
+                `' %.4e %+.4j %.4e %+.4j %.4e %+.4j'` for 3 columns
+            c) a list of specifiers, one per column - in this case, the real
+                and imaginary part must have separate specifiers,
+                e.g. `['%.3e + %.3ej', '(%.15e%+.15ej)']` for 2 columns
     delimiter : str, optional
         Character separating columns.
     newline : str, optional
         .. versionadded:: 1.5.0
     header : str, optional
         String that will be written at the beginning of the file.
-        .. versionadded:: 2.0.0
+        .. versionadded:: 1.7.0
     footer : str, optional
         String that will be written at the end of the file.
-        .. versionadded:: 2.0.0
+        .. versionadded:: 1.7.0
     comments : str, optional
         String that will be prepended to the ``header`` and ``footer`` strings,
         to mark them as comments. Default: '# ',  as expected by e.g.
         ``numpy.loadtxt``.
-        .. versionadded:: 2.0.0
+        .. versionadded:: 1.7.0
 
         Character separating lines.
-
 
     See Also
     --------
@@ -1003,6 +1009,7 @@ def savetxt(fname, X, fmt='%.18e', delimiter=' ', newline='\n', header='',
         else:
             ncol = X.shape[1]
 
+        iscomplex_X = np.iscomplexobj(X)
         # `fmt` can be a string with multiple insertion points or a
         # list of formats.  E.g. '%10.5f\t%10d' or ('%10.5f', '$10d')
         if type(fmt) in (list, tuple):
@@ -1010,20 +1017,34 @@ def savetxt(fname, X, fmt='%.18e', delimiter=' ', newline='\n', header='',
                 raise AttributeError('fmt has wrong shape.  %s' % str(fmt))
             format = asstr(delimiter).join(map(asstr, fmt))
         elif type(fmt) is str:
-            if fmt.count('%') == 1:
-                fmt = [fmt, ]*ncol
+            n_fmt_chars = fmt.count('%')
+            error = ValueError('fmt has wrong number of %% formats:  %s' % fmt)
+            if n_fmt_chars == 1:
+                if iscomplex_X:
+                    fmt = [' (%s+%sj)' % (fmt, fmt),] * ncol
+                else:
+                    fmt = [fmt, ] * ncol
                 format = delimiter.join(fmt)
-            elif fmt.count('%') != ncol:
-                raise AttributeError('fmt has wrong number of %% formats.  %s'
-                                     % fmt)
+            elif iscomplex_X and n_fmt_chars != (2 * ncol):
+                raise error
+            elif ((not iscomplex_X) and n_fmt_chars != ncol):
+                raise error
             else:
                 format = fmt
 
         if len(header) > 0:
             header = header.replace('\n', '\n' + comments)
             fh.write(asbytes(comments + header + newline))
-        for row in X:
-            fh.write(asbytes(format % tuple(row) + newline))
+        if iscomplex_X:
+            for row in X:
+                row2 = []
+                for number in row:
+                    row2.append(number.real)
+                    row2.append(number.imag)
+                fh.write(asbytes(format % tuple(row2) + newline))
+        else:
+            for row in X:
+                fh.write(asbytes(format % tuple(row) + newline))
         if len(footer) > 0:
             footer = footer.replace('\n', '\n' + comments)
             fh.write(asbytes(comments + footer + newline))
@@ -1185,8 +1206,8 @@ def genfromtxt(fname, dtype=float, comments='#', delimiter=None,
     autostrip : bool, optional
         Whether to automatically strip white spaces from the variables.
     replace_space : char, optional
-        Character(s) used in replacement of white spaces in the variables names.
-        By default, use a '_'.
+        Character(s) used in replacement of white spaces in the variables
+        names. By default, use a '_'.
     case_sensitive : {True, False, 'upper', 'lower'}, optional
         If True, field names are case sensitive.
         If False or 'upper', field names are converted to upper case.
@@ -1221,6 +1242,11 @@ def genfromtxt(fname, dtype=float, comments='#', delimiter=None,
       exception is raised).
     * Individual values are not stripped of spaces by default.
       When using a custom converter, make sure the function does remove spaces.
+
+    References
+    ----------
+    .. [1] Numpy User Guide, section `I/O with Numpy
+           <http://docs.scipy.org/doc/numpy/user/basics.io.genfromtxt.html>`_.
 
     Examples
     ---------
@@ -1265,7 +1291,8 @@ def genfromtxt(fname, dtype=float, comments='#', delimiter=None,
 
     """
     # Py3 data conversions to bytes, for convenience
-    comments = asbytes(comments)
+    if comments is not None:
+        comments = asbytes(comments)
     if isinstance(delimiter, unicode):
         delimiter = asbytes(delimiter)
     if isinstance(missing, unicode):
@@ -1745,8 +1772,9 @@ def ndfromtxt(fname, **kwargs):
     """
     Load ASCII data stored in a file and return it as a single array.
 
-    Complete description of all the optional input parameters is available in
-    the docstring of the `genfromtxt` function.
+    Parameters
+    ----------
+    fname, kwargs : For a description of input parameters, see `genfromtxt`.
 
     See Also
     --------
@@ -1761,7 +1789,9 @@ def mafromtxt(fname, **kwargs):
     """
     Load ASCII data stored in a text file and return a masked array.
 
-    For a complete description of all the input parameters, see `genfromtxt`.
+    Parameters
+    ----------
+    fname, kwargs : For a description of input parameters, see `genfromtxt`.
 
     See Also
     --------
@@ -1779,8 +1809,9 @@ def recfromtxt(fname, **kwargs):
     If ``usemask=False`` a standard `recarray` is returned,
     if ``usemask=True`` a MaskedRecords array is returned.
 
-    Complete description of all the optional input parameters is available in
-    the docstring of the `genfromtxt` function.
+    Parameters
+    ----------
+    fname, kwargs : For a description of input parameters, see `genfromtxt`.
 
     See Also
     --------
@@ -1811,7 +1842,9 @@ def recfromcsv(fname, **kwargs):
     `recarray`) or a masked record array (if ``usemask=True``,
     see `ma.mrecords.MaskedRecords`).
 
-    For a complete description of all the input parameters, see `genfromtxt`.
+    Parameters
+    ----------
+    fname, kwargs : For a description of input parameters, see `genfromtxt`.
 
     See Also
     --------

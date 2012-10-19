@@ -166,7 +166,7 @@ def rot90(m, k=1):
         # k == 3
         return fliplr(m.swapaxes(0,1))
 
-def eye(N, M=None, k=0, dtype=float, maskna=False):
+def eye(N, M=None, k=0, dtype=float):
     """
     Return a 2-D array with ones on the diagonal and zeros elsewhere.
 
@@ -182,8 +182,6 @@ def eye(N, M=None, k=0, dtype=float, maskna=False):
       to a lower diagonal.
     dtype : data-type, optional
       Data-type of the returned array.
-    maskna : boolean
-      If this is true, the returned array will have an NA mask.
 
     Returns
     -------
@@ -209,20 +207,29 @@ def eye(N, M=None, k=0, dtype=float, maskna=False):
     """
     if M is None:
         M = N
-    m = zeros((N, M), dtype=dtype, maskna=maskna)
-    diagonal(m, k)[...] = 1
+    m = zeros((N, M), dtype=dtype)
+    if k >= M:
+        return m
+    if k >= 0:
+        i = k
+    else:
+        i = (-k) * M
+    m[:M-k].flat[i::M+1] = 1
     return m
 
 def diag(v, k=0):
     """
     Extract a diagonal or construct a diagonal array.
 
-    As of NumPy 1.7, extracting a diagonal always returns a view into `v`.
+    See the more detailed documentation for ``numpy.diagonal`` if you use this
+    function to extract a diagonal and wish to write to the resulting array;
+    whether it returns a copy or a view depends on what version of numpy you
+    are using.
 
     Parameters
     ----------
     v : array_like
-        If `v` is a 2-D array, return a view of its `k`-th diagonal.
+        If `v` is a 2-D array, return a copy of its `k`-th diagonal.
         If `v` is a 1-D array, return a 2-D array with `v` on the `k`-th
         diagonal.
     k : int, optional
@@ -358,7 +365,7 @@ def tri(N, M=None, k=0, dtype=float):
 
     Returns
     -------
-    T : ndarray of shape (N, M)
+    tri : ndarray of shape (N, M)
         Array with its lower triangle filled with ones and zero elsewhere;
         in other words ``T[i,j] == 1`` for ``i <= j + k``, 0 otherwise.
 
@@ -396,7 +403,7 @@ def tril(m, k=0):
 
     Returns
     -------
-    L : ndarray, shape (M, N)
+    tril : ndarray, shape (M, N)
         Lower triangle of `m`, of same shape and data-type as `m`.
 
     See Also
@@ -790,9 +797,10 @@ def triu_indices(n, k=0):
 
     Returns
     -------
-    inds : tuple of arrays
+    inds : tuple, shape(2) of ndarrays, shape(`n`)
         The indices for the triangle. The returned tuple contains two arrays,
-        each with the indices along one dimension of the array.
+        each with the indices along one dimension of the array.  Can be used
+        to slice a ndarray of shape(`n`, `n`).
 
     See also
     --------
@@ -852,17 +860,21 @@ def triu_indices(n, k=0):
 
 def triu_indices_from(arr, k=0):
     """
-    Return the indices for the upper-triangle of an (n, n) array.
+    Return the indices for the upper-triangle of a (N, N) array.
 
     See `triu_indices` for full details.
 
     Parameters
     ----------
-    arr : array_like
-        The indices will be valid for square arrays whose dimensions are
-        the same as arr.
+    arr : ndarray, shape(N, N)
+        The indices will be valid for square arrays.
     k : int, optional
-      Diagonal offset (see `triu` for details).
+        Diagonal offset (see `triu` for details).
+
+    Returns
+    -------
+    triu_indices_from : tuple, shape(2) of ndarray, shape(N)
+        Indices for the upper-triangle of `arr`.
 
     See Also
     --------

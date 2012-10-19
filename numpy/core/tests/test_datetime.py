@@ -5,6 +5,14 @@ from numpy.testing import *
 from numpy.compat import asbytes
 import datetime
 
+# Use pytz to test out various time zones if available
+try:
+    from pytz import timezone as tz
+    _has_pytz = True
+except ImportError:
+    _has_pytz = False
+
+
 class TestDateTime(TestCase):
     def test_datetime_dtype_creation(self):
         for unit in ['Y', 'M', 'W', 'D',
@@ -25,6 +33,7 @@ class TestDateTime(TestCase):
                 np.dtype("<M8") == np.dtype("M8"))
         assert_(np.dtype(">M8[D]") == np.dtype("M8[D]") or
                 np.dtype("<M8[D]") == np.dtype("M8[D]"))
+        assert_(np.dtype(">M8") != np.dtype("<M8"))
 
         assert_equal(np.dtype("=m8"), np.dtype("m8"))
         assert_equal(np.dtype("=m8[s]"), np.dtype("m8[s]"))
@@ -32,6 +41,7 @@ class TestDateTime(TestCase):
                 np.dtype("<m8") == np.dtype("m8"))
         assert_(np.dtype(">m8[D]") == np.dtype("m8[D]") or
                 np.dtype("<m8[D]") == np.dtype("m8[D]"))
+        assert_(np.dtype(">m8") != np.dtype("<m8"))
 
         # Check that the parser rejects bad datetime types
         assert_raises(TypeError, np.dtype, 'M8[badunit]')
@@ -519,9 +529,31 @@ class TestDateTime(TestCase):
     def test_pickle(self):
         # Check that pickle roundtripping works
         dt = np.dtype('M8[7D]')
-        assert_equal(dt, pickle.loads(pickle.dumps(dt)))
+        assert_equal(pickle.loads(pickle.dumps(dt)), dt)
         dt = np.dtype('M8[W]')
-        assert_equal(dt, pickle.loads(pickle.dumps(dt)))
+        assert_equal(pickle.loads(pickle.dumps(dt)), dt)
+
+        # Check that loading pickles from 1.6 works
+        pkl = "cnumpy\ndtype\np0\n(S'M8'\np1\nI0\nI1\ntp2\nRp3\n" + \
+              "(I4\nS'<'\np4\nNNNI-1\nI-1\nI0\n((dp5\n(S'D'\np6\n" + \
+              "I7\nI1\nI1\ntp7\ntp8\ntp9\nb."
+        assert_equal(pickle.loads(asbytes(pkl)), np.dtype('<M8[7D]'))
+        pkl = "cnumpy\ndtype\np0\n(S'M8'\np1\nI0\nI1\ntp2\nRp3\n" + \
+              "(I4\nS'<'\np4\nNNNI-1\nI-1\nI0\n((dp5\n(S'W'\np6\n" + \
+              "I1\nI1\nI1\ntp7\ntp8\ntp9\nb."
+        assert_equal(pickle.loads(asbytes(pkl)), np.dtype('<M8[W]'))
+        pkl = "cnumpy\ndtype\np0\n(S'M8'\np1\nI0\nI1\ntp2\nRp3\n" + \
+              "(I4\nS'>'\np4\nNNNI-1\nI-1\nI0\n((dp5\n(S'us'\np6\n" + \
+              "I1\nI1\nI1\ntp7\ntp8\ntp9\nb."
+        assert_equal(pickle.loads(asbytes(pkl)), np.dtype('>M8[us]'))
+
+    def test_setstate(self):
+        "Verify that datetime dtype __setstate__ can handle bad arguments"
+        dt = np.dtype('>M8[us]')
+        assert_raises(ValueError, dt.__setstate__, (4, '>', None, None, None, -1, -1, 0, 1))
+        assert (dt.__reduce__()[2] == np.dtype('>M8[us]').__reduce__()[2])
+        assert_raises(TypeError, dt.__setstate__, (4, '>', None, None, None, -1, -1, 0, ({}, 'xxx')))
+        assert (dt.__reduce__()[2] == np.dtype('>M8[us]').__reduce__()[2])
 
     def test_dtype_promotion(self):
         # datetime <op> datetime computes the metadata gcd
@@ -950,6 +982,22 @@ class TestDateTime(TestCase):
             # float / M8
             assert_raises(TypeError, np.divide, 1.5, dta)
 
+    def test_datetime_compare(self):
+        # Test all the comparison operators
+        a = np.datetime64('2000-03-12T18:00:00.000000-0600')
+        b = np.array(['2000-03-12T18:00:00.000000-0600',
+                      '2000-03-12T17:59:59.999999-0600',
+                      '2000-03-12T18:00:00.000001-0600',
+                      '1970-01-11T12:00:00.909090-0600',
+                      '2016-01-11T12:00:00.909090-0600'],
+                      dtype='datetime64[us]')
+        assert_equal(np.equal(a, b), [1, 0, 0, 0, 0])
+        assert_equal(np.not_equal(a, b), [0, 1, 1, 1, 1])
+        assert_equal(np.less(a, b), [0, 0, 1, 0, 1])
+        assert_equal(np.less_equal(a, b), [1, 0, 1, 0, 1])
+        assert_equal(np.greater(a, b), [0, 1, 0, 1, 0])
+        assert_equal(np.greater_equal(a, b), [1, 1, 0, 1, 0])
+
     def test_datetime_minmax(self):
         # The metadata of the result should become the GCD
         # of the operand metadata
@@ -1274,6 +1322,7 @@ class TestDateTime(TestCase):
                                             unit='auto'),
                             '2032-01-01')
 
+    @dec.skipif(not _has_pytz, "The pytz module is not available.")
     def test_datetime_as_string_timezone(self):
         # timezone='local' vs 'UTC'
         a = np.datetime64('2010-03-15T06:30Z', 'm')
@@ -1282,39 +1331,32 @@ class TestDateTime(TestCase):
         assert_(np.datetime_as_string(a, timezone='local') !=
                 '2010-03-15T06:30Z')
 
-        # Use pytz to test out various time zones
-        try:
-            from pytz import timezone as tz
+        b = np.datetime64('2010-02-15T06:30Z', 'm')
 
-            b = np.datetime64('2010-02-15T06:30Z', 'm')
+        assert_equal(np.datetime_as_string(a, timezone=tz('US/Central')),
+                     '2010-03-15T01:30-0500')
+        assert_equal(np.datetime_as_string(a, timezone=tz('US/Eastern')),
+                     '2010-03-15T02:30-0400')
+        assert_equal(np.datetime_as_string(a, timezone=tz('US/Pacific')),
+                     '2010-03-14T23:30-0700')
 
-            assert_equal(np.datetime_as_string(a, timezone=tz('US/Central')),
-                         '2010-03-15T01:30-0500')
-            assert_equal(np.datetime_as_string(a, timezone=tz('US/Eastern')),
-                         '2010-03-15T02:30-0400')
-            assert_equal(np.datetime_as_string(a, timezone=tz('US/Pacific')),
-                         '2010-03-14T23:30-0700')
+        assert_equal(np.datetime_as_string(b, timezone=tz('US/Central')),
+                     '2010-02-15T00:30-0600')
+        assert_equal(np.datetime_as_string(b, timezone=tz('US/Eastern')),
+                     '2010-02-15T01:30-0500')
+        assert_equal(np.datetime_as_string(b, timezone=tz('US/Pacific')),
+                     '2010-02-14T22:30-0800')
 
-            assert_equal(np.datetime_as_string(b, timezone=tz('US/Central')),
-                         '2010-02-15T00:30-0600')
-            assert_equal(np.datetime_as_string(b, timezone=tz('US/Eastern')),
-                         '2010-02-15T01:30-0500')
-            assert_equal(np.datetime_as_string(b, timezone=tz('US/Pacific')),
-                         '2010-02-14T22:30-0800')
-
-            # Dates to strings with a timezone attached is disabled by default
-            assert_raises(TypeError, np.datetime_as_string, a, unit='D',
-                               timezone=tz('US/Pacific'))
-            # Check that we can print out the date in the specified time zone
-            assert_equal(np.datetime_as_string(a, unit='D',
-                               timezone=tz('US/Pacific'), casting='unsafe'),
-                         '2010-03-14')
-            assert_equal(np.datetime_as_string(b, unit='D',
-                               timezone=tz('US/Central'), casting='unsafe'),
-                         '2010-02-15')
-        except ImportError:
-            import warnings
-            warnings.warn("pytz not found, pytz compatibility tests skipped")
+        # Dates to strings with a timezone attached is disabled by default
+        assert_raises(TypeError, np.datetime_as_string, a, unit='D',
+                           timezone=tz('US/Pacific'))
+        # Check that we can print out the date in the specified time zone
+        assert_equal(np.datetime_as_string(a, unit='D',
+                           timezone=tz('US/Pacific'), casting='unsafe'),
+                     '2010-03-14')
+        assert_equal(np.datetime_as_string(b, unit='D',
+                           timezone=tz('US/Central'), casting='unsafe'),
+                     '2010-02-15')
 
     def test_datetime_arange(self):
         # With two datetimes provided as strings

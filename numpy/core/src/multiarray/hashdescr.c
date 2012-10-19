@@ -1,12 +1,12 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #define _MULTIARRAYMODULE
-#include <numpy/ndarrayobject.h>
+#include <numpy/arrayobject.h>
 
 #include "npy_config.h"
 
-#include "numpy/npy_3kcompat.h"
+#include "npy_pycompat.h"
 
 #include "hashdescr.h"
 
@@ -34,32 +34,33 @@ static int _array_descr_builtin(PyArray_Descr* descr, PyObject *l);
 /*
  * normalize endian character: always return 'I', '<' or '>'
  */
- static char _normalize_byteorder(char byteorder)
- {
-	switch(byteorder) {
-	case '=':
-		if (PyArray_GetEndianness() == NPY_CPU_BIG) {
-			return '>';
-		} else {
-			return '<';
-		}
-	default:
-		return byteorder;
-	}
- }
+static char _normalize_byteorder(char byteorder)
+{
+   switch(byteorder) {
+       case '=':
+           if (PyArray_GetEndianness() == NPY_CPU_BIG) {
+               return '>';
+           }
+           else {
+               return '<';
+           }
+       default:
+           return byteorder;
+   }
+}
 
 /*
  * Return true if descr is a builtin type
  */
 static int _is_array_descr_builtin(PyArray_Descr* descr)
 {
-        if (descr->fields != NULL && descr->fields != Py_None) {
-                return 0;
-        }
-        if (PyDataType_HASSUBARRAY(descr)) {
-                return 0;
-        }
-        return 1;
+    if (descr->fields != NULL && descr->fields != Py_None) {
+        return 0;
+    }
+    if (PyDataType_HASSUBARRAY(descr)) {
+        return 0;
+    }
+    return 1;
 }
 
 /*
@@ -75,9 +76,8 @@ static int _array_descr_builtin(PyArray_Descr* descr, PyObject *l)
      * For builtin type, hash relies on : kind + byteorder + flags +
      * type_num + elsize + alignment
      */
-    t = Py_BuildValue("(cciiii)", descr->kind, nbyteorder,
-            descr->flags, descr->type_num, descr->elsize,
-            descr->alignment);
+    t = Py_BuildValue("(cccii)", descr->kind, nbyteorder,
+            descr->flags, descr->elsize, descr->alignment);
 
     for(i = 0; i < PyTuple_Size(t); ++i) {
         item = PyTuple_GetItem(t, i);
@@ -139,7 +139,8 @@ static int _array_descr_walk_fields(PyObject* fields, PyObject* l)
             PyErr_SetString(PyExc_SystemError,
                     "(Hash) First item in compound dtype tuple not a descr ???");
             return -1;
-        } else {
+        }
+        else {
             Py_INCREF(fdescr);
             st = _array_descr_walk((PyArray_Descr*)fdescr, l);
             Py_DECREF(fdescr);
@@ -153,7 +154,8 @@ static int _array_descr_walk_fields(PyObject* fields, PyObject* l)
             PyErr_SetString(PyExc_SystemError,
                     "(Hash) Second item in compound dtype tuple not an int ???");
             return -1;
-        } else {
+        }
+        else {
             Py_INCREF(foffset);
             PyList_Append(l, foffset);
         }
@@ -187,10 +189,12 @@ static int _array_descr_walk_subarray(PyArray_ArrayDescr* adescr, PyObject *l)
             Py_INCREF(item);
             PyList_Append(l, item);
         }
-    } else if (PyInt_Check(adescr->shape)) {
+    }
+    else if (PyInt_Check(adescr->shape)) {
         Py_INCREF(adescr->shape);
         PyList_Append(l, adescr->shape);
-    } else {
+    }
+    else {
         PyErr_SetString(PyExc_SystemError,
                 "(Hash) Shape of subarray dtype neither a tuple or int ???");
         return -1;
@@ -212,7 +216,8 @@ static int _array_descr_walk(PyArray_Descr* descr, PyObject *l)
 
     if (_is_array_descr_builtin(descr)) {
         return _array_descr_builtin(descr, l);
-    } else {
+    }
+    else {
         if(descr->fields != NULL && descr->fields != Py_None) {
             if (!PyDict_Check(descr->fields)) {
                 PyErr_SetString(PyExc_SystemError,

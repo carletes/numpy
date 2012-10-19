@@ -204,8 +204,6 @@ add_newdoc('numpy.core', 'nditer',
             copies those elements indicated by this mask.
           * 'writemasked' indicates that only elements where the chosen
             'arraymask' operand is True will be written to.
-          * 'use_maskna' indicates that this operand should be treated
-            like an NA-masked array.
     op_dtypes : dtype or tuple of dtype(s), optional
         The required data type(s) of the operands. If copying or buffering
         is enabled, the data will be converted to/from their original types.
@@ -640,7 +638,7 @@ add_newdoc('numpy.core', 'broadcast', ('reset',
 
 add_newdoc('numpy.core.multiarray', 'array',
     """
-    array(object, dtype=None, copy=True, order=None, subok=False, ndmin=0, maskna=None, ownmaskna=False)
+    array(object, dtype=None, copy=True, order=None, subok=False, ndmin=0)
 
     Create an array.
 
@@ -676,19 +674,6 @@ add_newdoc('numpy.core.multiarray', 'array',
         Specifies the minimum number of dimensions that the resulting
         array should have.  Ones will be pre-pended to the shape as
         needed to meet this requirement.
-    maskna : bool or None, optional
-        If this is set to True, it forces the array to have an NA mask.
-        If the input is an array without a mask, this means a view with
-        an NA mask is created. If the input is an array with a mask, the
-        mask is preserved as-is.
-
-        If this is set to False, it forces the array to not have an NA
-        mask. If the input is an array with a mask, and has no NA values,
-        it will create a copy of the input without an NA mask.
-    ownmaskna : bool, optional
-        If this is set to True, forces the array to have a mask which
-        it owns. It may still return a view of the data from the input,
-        but the result will always own its own mask.
 
     Returns
     -------
@@ -758,8 +743,6 @@ add_newdoc('numpy.core.multiarray', 'empty',
     order : {'C', 'F'}, optional
         Whether to store multi-dimensional data in C (row-major) or
         Fortran (column-major) order in memory.
-    maskna : boolean
-        If this is true, the returned array will have an NA mask.
 
     See Also
     --------
@@ -796,8 +779,10 @@ add_newdoc('numpy.core.multiarray', 'empty_like',
         The shape and data-type of `a` define these same attributes of the
         returned array.
     dtype : data-type, optional
+        .. versionadded:: 1.6.0
         Overrides the data type of the result.
     order : {'C', 'F', 'A', or 'K'}, optional
+        .. versionadded:: 1.6.0
         Overrides the memory layout of the result. 'C' means C-order,
         'F' means F-order, 'A' means 'F' if ``a`` is Fortran contiguous,
         'C' otherwise. 'K' means match the layout of ``a`` as closely
@@ -908,35 +893,6 @@ add_newdoc('numpy.core.multiarray', 'zeros',
 
     """)
 
-add_newdoc('numpy.core.multiarray', 'isna',
-    """
-    isna(a)
-
-    Returns an array with True for each element of *a* that is NA.
-
-    Parameters
-    ----------
-    a : array_like
-        The array for which to check for NA.
-
-    Returns
-    -------
-    result : bool or array of bool
-        Number of non-zero values in the array.
-
-    Examples
-    --------
-    >>> np.isna(np.NA)
-    True
-    >>> np.isna(1.5)
-    False
-    >>> np.isna(np.nan)
-    False
-    >>> a = np.array([0, np.NA, 3.5, np.NA])
-    >>> np.isna(a)
-    array([False,  True, False,  True], dtype=bool)
-    """)
-
 add_newdoc('numpy.core.multiarray', 'count_nonzero',
     """
     count_nonzero(a)
@@ -947,17 +903,6 @@ add_newdoc('numpy.core.multiarray', 'count_nonzero',
     ----------
     a : array_like
         The array for which to count non-zeros.
-    axis : None or int or tuple of ints, optional
-        Axis or axes along which a reduction is performed.
-        The default (`axis` = None) is perform a reduction over all
-        the dimensions of the input array.
-    skipna : bool, optional
-        If this is set to True, any NA elements in the array are skipped
-        instead of propagating.
-    keepdims : bool, optional
-        If this is set to True, the axes which are reduced are left
-        in the result as dimensions with size one. With this option,
-        the result will broadcast correctly against the original `arr`.
 
     Returns
     -------
@@ -974,65 +919,6 @@ add_newdoc('numpy.core.multiarray', 'count_nonzero',
     4
     >>> np.count_nonzero([[0,1,7,0,0],[3,0,0,2,19]])
     5
-    >>> np.count_nonzero([[0,1,7,0,0],[3,0,0,2,19]], axis=1)
-    array([2, 3])
-    >>> np.count_nonzero([[0,1,7,0,0],[3,0,0,2,19]], axis=1, keepdims=True)
-    array([[2],
-           [3]])
-    """)
-
-add_newdoc('numpy.core.multiarray', 'count_reduce_items',
-    """
-    count_reduce_items(arr, axis=None, skipna=False, keepdims=False)
-
-    Counts the number of items a reduction with the same `axis`
-    and `skipna` parameter values would use. The purpose of this
-    function is for the creation of reduction operations
-    which use the item count, such as :func:`mean`.
-
-    When `skipna` is False or `arr` doesn't have an NA mask,
-    the result is simply the product of the reduction axis
-    sizes, returned as a single scalar.
-
-    Parameters
-    ----------
-    arr : array_like
-        The array for which to count the reduce items.
-    axis : None or int or tuple of ints, optional
-        Axis or axes along which a reduction is performed.
-        The default (`axis` = None) is perform a reduction over all
-        the dimensions of the input array.
-    skipna : bool, optional
-        If this is set to True, any NA elements in the array are not
-        counted. The only time this function does any actual counting
-        instead of a cheap multiply of a few sizes is when `skipna` is
-        true and `arr` has an NA mask.
-    keepdims : bool, optional
-        If this is set to True, the axes which are reduced are left
-        in the result as dimensions with size one. With this option,
-        the result will broadcast correctly against the original `arr`.
-
-    Returns
-    -------
-    count : intp or array of intp
-        Number of items that would be used in a reduction with the
-        same `axis` and `skipna` parameter values.
-
-    Examples
-    --------
-    >>> a = np.array([[1,np.NA,1], [1,1,np.NA]])
-
-    >>> np.count_reduce_items(a)
-    6
-    >>> np.count_reduce_items(a, skipna=True)
-    4
-    >>> np.sum(a, skipna=True)
-    4
-
-    >>> np.count_reduce_items(a, axis=0, skipna=True)
-    array([2, 1, 1])
-    >>> np.sum(a, axis=0, skipna=True)
-    array([2, 1, 1])
     """)
 
 add_newdoc('numpy.core.multiarray','set_typeDict',
@@ -1398,7 +1284,7 @@ add_newdoc('numpy.core.multiarray','correlate',
 
 add_newdoc('numpy.core.multiarray', 'arange',
     """
-    arange([start,] stop[, step,], dtype=None, maskna=False)
+    arange([start,] stop[, step,], dtype=None)
 
     Return evenly spaced values within a given interval.
 
@@ -1406,7 +1292,7 @@ add_newdoc('numpy.core.multiarray', 'arange',
     (in other words, the interval including `start` but excluding `stop`).
     For integer arguments the function is equivalent to the Python built-in
     `range <http://docs.python.org/lib/built-in-funcs.html>`_ function,
-    but returns a ndarray rather than a list.
+    but returns an ndarray rather than a list.
 
     When using a non-integer step, such as 0.1, the results will often not
     be consistent.  It is better to use ``linspace`` for these cases.
@@ -1427,12 +1313,10 @@ add_newdoc('numpy.core.multiarray', 'arange',
     dtype : dtype
         The type of the output array.  If `dtype` is not given, infer the data
         type from the other input arguments.
-    maskna : boolean
-        If this is true, the returned array will have an NA mask.
 
     Returns
     -------
-    out : ndarray
+    arange : ndarray
         Array of evenly spaced values.
 
         For floating point arguments, the length of the result is
@@ -1443,8 +1327,8 @@ add_newdoc('numpy.core.multiarray', 'arange',
     See Also
     --------
     linspace : Evenly spaced numbers with careful handling of endpoints.
-    ogrid: Arrays of evenly spaced numbers in N-dimensions
-    mgrid: Grid-shaped arrays of evenly spaced numbers in N-dimensions
+    ogrid: Arrays of evenly spaced numbers in N-dimensions.
+    mgrid: Grid-shaped arrays of evenly spaced numbers in N-dimensions.
 
     Examples
     --------
@@ -1583,6 +1467,17 @@ add_newdoc('numpy.core.multiarray', 'where',
     array([[ 0.,  1.,  2.],
            [ 3.,  4., -1.],
            [-1., -1., -1.]])
+
+    Find the indices of elements of `x` that are in `goodvalues`.
+
+    >>> goodvalues = [3, 4, 7]
+    >>> ix = np.in1d(x.ravel(), goodvalues).reshape(x.shape)
+    >>> ix
+    array([[False, False, False],
+           [ True,  True, False],
+           [False,  True, False]], dtype=bool)
+    >>> np.where(ix)
+    (array([1, 1, 2]), array([0, 1, 1]))
 
     """)
 
@@ -1902,7 +1797,7 @@ add_newdoc('numpy.core.multiarray', 'result_type',
     Categories are determined by first checking which of boolean,
     integer (int/uint), or floating point (float/complex) the maximum
     kind of all the arrays and the scalars are.
-    
+
     If there are only scalars or the maximum category of the scalars
     is higher than the maximum category of the arrays,
     the data types are combined with :func:`promote_types`
@@ -1929,10 +1824,21 @@ add_newdoc('numpy.core.multiarray', 'result_type',
 
     """)
 
-add_newdoc('numpy.core.multiarray','newbuffer',
-    """newbuffer(size)
+add_newdoc('numpy.core.multiarray', 'newbuffer',
+    """
+    newbuffer(size)
 
-    Return a new uninitialized buffer object of size bytes
+    Return a new uninitialized buffer object.
+
+    Parameters
+    ----------
+    size : int
+        Size in bytes of returned buffer object.
+
+    Returns
+    -------
+    newbuffer : buffer object
+        Returned, uninitialized buffer object of `size` bytes.
 
     """)
 
@@ -2236,7 +2142,7 @@ add_newdoc('numpy.core', 'einsum',
 
 add_newdoc('numpy.core', 'alterdot',
     """
-    Change `dot`, `vdot`, and `innerproduct` to use accelerated BLAS functions.
+    Change `dot`, `vdot`, and `inner` to use accelerated BLAS functions.
 
     Typically, as a user of Numpy, you do not explicitly call this function. If
     Numpy is built with an accelerated BLAS, this function is automatically
@@ -3163,6 +3069,14 @@ add_newdoc('numpy.core.multiarray', 'ndarray', ('astype',
         requirements are satisfied, the input array is returned instead
         of a copy.
 
+    Returns
+    -------
+    arr_t : ndarray
+        Unless `copy` is False and the other conditions for returning the input
+        array are satisfied (see description for `copy` input paramter), `arr_t`
+        is a new array of the same shape as the input array, with dtype, order
+        given by `dtype`, `order`.
+
     Raises
     ------
     ComplexWarning :
@@ -3298,7 +3212,7 @@ add_newdoc('numpy.core.multiarray', 'ndarray', ('conjugate',
 
 add_newdoc('numpy.core.multiarray', 'ndarray', ('copy',
     """
-    a.copy(order='C', maskna=None)
+    a.copy(order='C')
 
     Return a copy of the array.
 
@@ -3308,14 +3222,13 @@ add_newdoc('numpy.core.multiarray', 'ndarray', ('copy',
         Controls the memory layout of the copy. 'C' means C-order,
         'F' means F-order, 'A' means 'F' if `a` is Fortran contiguous,
         'C' otherwise. 'K' means match the layout of `a` as closely
-        as possible.
-    maskna : bool, optional
-        If specifies, forces the copy to have or to not have an
-        NA mask. This is a way to remove an NA mask from an array
-        while making a copy.
+        as possible. (Note that this function and :func:numpy.copy are very
+        similar, but have different default values for their order=
+        arguments.)
 
     See also
     --------
+    numpy.copy
     numpy.copyto
 
     Examples
@@ -3828,8 +3741,9 @@ add_newdoc('numpy.core.multiarray', 'copyto',
     """
     copyto(dst, src, casting='same_kind', where=None, preservena=False)
 
-    Copies values from `src` into `dst`, broadcasting as necessary.
-    Raises a TypeError if the casting rule is violated, and if
+    Copies values from one array to another, broadcasting as necessary.
+
+    Raises a TypeError if the `casting` rule is violated, and if
     `where` is provided, it selects which elements to copy.
 
     .. versionadded:: 1.7.0
@@ -3863,15 +3777,17 @@ add_newdoc('numpy.core.multiarray', 'putmask',
     """
     putmask(a, mask, values)
 
-    This function is deprecated as of NumPy 1.7. Use the function
-    ``np.copyto(a, values, where=mask)`` to achieve this functionality.
-
     Changes elements of an array based on conditional and input values.
 
     Sets ``a.flat[n] = values[n]`` for each n where ``mask.flat[n]==True``.
 
     If `values` is not the same size as `a` and `mask` then it will repeat.
     This gives behavior different from ``a[mask] = values``.
+
+    .. note:: The `putmask` functionality is also provided by `copyto`, which
+              can be significantly faster and in addition is NA-aware
+              (`preservena` keyword).  Replacing `putmask` with
+              ``np.copyto(a, values, where=mask)`` is recommended.
 
     Parameters
     ----------
@@ -4058,7 +3974,7 @@ add_newdoc('numpy.core.multiarray', 'ndarray', ('round',
 
 add_newdoc('numpy.core.multiarray', 'ndarray', ('searchsorted',
     """
-    a.searchsorted(v, side='left')
+    a.searchsorted(v, side='left', sorter=None)
 
     Find indices where elements of v should be inserted in a to maintain order.
 
@@ -4841,14 +4757,17 @@ add_newdoc('numpy.core.umath', 'seterrobj',
 
 add_newdoc('numpy.lib._compiled_base', 'digitize',
     """
-    digitize(x, bins)
+    digitize(x, bins, right=False)
 
     Return the indices of the bins to which each value in input array belongs.
 
     Each index ``i`` returned is such that ``bins[i-1] <= x < bins[i]`` if
     `bins` is monotonically increasing, or ``bins[i-1] > x >= bins[i]`` if
     `bins` is monotonically decreasing. If values in `x` are beyond the
-    bounds of `bins`, 0 or ``len(bins)`` is returned as appropriate.
+    bounds of `bins`, 0 or ``len(bins)`` is returned as appropriate. If right
+    is True, then the right bin is closed so that the index ``i`` is such
+    that ``bins[i-1] < x <= bins[i]`` or bins[i-1] >= x > bins[i]`` if `bins`
+    is monotonically increasing or decreasing, respectively.
 
     Parameters
     ----------
@@ -4856,6 +4775,12 @@ add_newdoc('numpy.lib._compiled_base', 'digitize',
         Input array to be binned. It has to be 1-dimensional.
     bins : array_like
         Array of bins. It has to be 1-dimensional and monotonic.
+    right : bool, optional
+        Indicating whether the intervals include the right or the left bin
+        edge. Default behavior is (right==False) indicating that the interval
+        does not include the right edge. The left bin and is open in this
+        case. Ie., bins[i-1] <= x < bins[i] is the default behavior for
+        monotonically increasing bins.
 
     Returns
     -------
@@ -4894,6 +4819,12 @@ add_newdoc('numpy.lib._compiled_base', 'digitize',
     2.5 <= 3.0 < 4.0
     1.0 <= 1.6 < 2.5
 
+    >>> x = np.array([1.2, 10.0, 12.4, 15.5, 20.])
+    >>> bins = np.array([0,5,10,15,20])
+    >>> np.digitize(x,bins,right=True)
+    array([1, 2, 3, 4, 4])
+    >>> np.digitize(x,bins,right=False)
+    array([1, 3, 3, 4, 5])
     """)
 
 add_newdoc('numpy.lib._compiled_base', 'bincount',
@@ -5431,7 +5362,7 @@ add_newdoc('numpy.core', 'ufunc', ('types',
 
 add_newdoc('numpy.core', 'ufunc', ('reduce',
     """
-    reduce(a, axis=0, dtype=None, out=None, skipna=False, keepdims=False)
+    reduce(a, axis=0, dtype=None, out=None, keepdims=False)
 
     Reduces `a`'s dimension by one, by applying ufunc along one axis.
 
@@ -5476,11 +5407,6 @@ add_newdoc('numpy.core', 'ufunc', ('reduce',
     out : ndarray, optional
         A location into which the result is stored. If not provided, a
         freshly-allocated array is returned.
-    skipna : bool, optional
-        If this is set to True, the reduction is done as if any NA elements
-        were not counted in the array. The default, False, causes the
-        NA values to propagate, so if any element in a set of elements
-        being reduced is NA, the result will be NA.
     keepdims : bool, optional
         If this is set to True, the axes which are reduced are left
         in the result as dimensions with size one. With this option,

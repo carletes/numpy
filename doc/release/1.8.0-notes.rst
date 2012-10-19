@@ -1,22 +1,33 @@
 =========================
-NumPy 2.0.0 Release Notes
+NumPy 1.8.0 Release Notes
 =========================
 
-[Possibly 1.7.0 release notes, as ABI compatibility is still being maintained]
 
 Highlights
 ==========
 
 
+Compatibility notes
+===================
+
+numpy.diag, np.diagonal, and the diagonal method of ndarrays return
+a view onto the original array, instead of producing a copy.
+
+selecting multiple fields out of an array also produces a view.
+
 New features
 ============
 
-Mask-based NA missing values
+Masked-arrays
 ----------------------------
 
 Preliminary support for NA missing values similar to those in R has
-been implemented.  This was done by adding optional NA masks to the core
-array object.
+been implemented.  This was done by adding an NA mask to an array sub-type
+
+.. note:: The NA API is *experimental*, and may undergo changes in future
+   versions of NumPy.  The current implementation based on masks will likely be
+   supplemented by a second one based on bit-patterns, and it is possible that
+   a difference will be made between missing and ignored data.
 
 While a significant amount of the NumPy functionality has been extended to
 support NA masks, not everything is yet supported. Here is an (incomplete)
@@ -66,55 +77,26 @@ Differences with R:
       This may have a practical advantage in spite of violating the
       NA theoretical model, so NumPy could adopt the behavior if necessary
 
-Reduction UFuncs Generalize axis= Parameter
--------------------------------------------
 
-Any ufunc.reduce function call, as well as other reductions like
-sum, prod, any, all, max and min support the ability to choose
-a subset of the axes to reduce over. Previously, one could say
-axis=None to mean all the axes or axis=# to pick a single axis.
-Now, one can also say axis=(#,#) to pick a list of axes for reduction.
+New argument to searchsorted
+----------------------------
 
-Reduction UFuncs New keepdims= Parameter
-----------------------------------------
+The function searchsorted now accepts a 'sorter' argument that is a
+permuation array that sorts the array to search.
 
-There is a new keepdims= parameter, which if set to True, doesn't
-throw away the reduction axes but instead sets them to have size one.
-When this option is set, the reduction result will broadcast correctly
-to the original operand which was reduced.
+C API
+-----
 
-
-Custom formatter for printing arrays
-------------------------------------
-
-
+New function ``PyArray_RequireWriteable`` provides a consistent
+interface for checking array writeability -- any C code which works
+with arrays whose WRITEABLE flag is not known to be True a priori,
+should make sure to call this function before writing.
 
 Changes
 =======
 
-The default casting rule for UFunc out= parameters has been changed from
-'unsafe' to 'same_kind'.  Most usages which violate the 'same_kind'
-rule are likely bugs, so this change may expose previously undetected
-errors in projects that depend on NumPy.
-
-Full-array boolean indexing used to allow boolean arrays with a size
-non-broadcastable to the array size. Now it forces this to be broadcastable.
-Since this affects some legacy code, this change will require discussion
-during alpha or early beta testing, and a decision to either keep the
-stricter behavior, or add in a hack to allow the previous behavior to
-work.
-
-The functions np.diag, np.diagonal, and <ndarray>.diagonal now return a
-view into the original array instead of making a copy. This makes these
-functions more consistent with NumPy's general approach of taking views
-where possible, and performs much faster as well. This has the
-potential to break code that assumes a copy is made instead of a view.
-
-The <ufunc>.reduce functions evaluates some reductions in a different
-order than in previous versions of NumPy, generally providing higher
-performance. Because of the nature of floating-point arithmetic, this
-may subtly change some results, just as linking NumPy to a different
-BLAS implementations such as MKL can.
+General
+-------
 
 The function np.concatenate tries to match the layout of its input
 arrays. Previously, the layout did not follow any particular reason,
@@ -128,16 +110,39 @@ objects. For example the expression (3 and 'test') produces the string
 'test', and now np.logical_and(np.array(3, 'O'), np.array('test', 'O'))
 produces 'test' as well.
 
+
+DATETIME
+--------
+
+There have been a lot of fixes and enhancements to datetime64. The notes
+in doc/source/reference/arrays.datetime.rst or in the generated
+documentation should be consulted for the details.
+
+
 Deprecations
 ============
+
+General
+-------
 
 Specifying a custom string formatter with a `_format` array attribute is
 deprecated. The new `formatter` keyword in ``numpy.set_printoptions`` or
 ``numpy.array2string`` can be used instead.
 
-In the C API, direct access to the fields of PyArrayObject* has been
-deprecated. Direct access has been recommended against for many releases, but
-now you can test your code against the deprecated C API by #defining
-NPY_NO_DEPRECATED_API before including any NumPy headers. Expect
-something similar for PyArray_Descr* and other core objects in the
-future as preparation for NumPy 2.0.
+The deprecated imports in the polynomial package have been removed.
+
+C-API
+-----
+
+Direct access to the fields of PyArrayObject* has been deprecated. Direct
+access has been recommended against for many releases. Expect similar
+deprecations for PyArray_Descr* and other core objects in the future as
+preparation for NumPy 2.0.
+
+The macros in old_defines.h are deprecated and will be removed in the next
+major release (>= 2.0). The sed script tools/replace_old_macros.sed can
+be used to replace these macros with the newer versions.
+
+You can test your code against the deprecated C API by #defining
+NPY_NO_DEPRECATED_API to the target version number, for example
+NPY_1_7_API_VERSION, before including any NumPy headers.

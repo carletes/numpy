@@ -214,7 +214,6 @@ PyArray_XDECREF_ERR(PyArrayObject *arr)
         PyArray_FromDimsAndDataAndDescr(nd, d, PyArray_DescrFromType(type),   \
                                         data)
 
-#include "old_defines.h"
 
 /*
    Check to see if this key in the dictionary is the "title"
@@ -230,8 +229,10 @@ PyArray_XDECREF_ERR(PyArrayObject *arr)
 
 #if PY_VERSION_HEX >= 0x02050000
 #define DEPRECATE(msg) PyErr_WarnEx(PyExc_DeprecationWarning,msg,1)
+#define DEPRECATE_FUTUREWARNING(msg) PyErr_WarnEx(PyExc_FutureWarning,msg,1)
 #else
 #define DEPRECATE(msg) PyErr_Warn(PyExc_DeprecationWarning,msg)
+#define DEPRECATE_FUTUREWARNING(msg) PyErr_Warn(PyExc_FutureWarning,msg)
 #endif
 
 

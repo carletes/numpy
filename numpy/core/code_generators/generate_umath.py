@@ -387,7 +387,7 @@ defdict = {
 'greater_equal' :
     Ufunc(2, 1, None,
           docstrings.get('numpy.core.umath.greater_equal'),
-          None,
+          'PyUFunc_SimpleBinaryComparisonTypeResolver',
           TD(all, out='?'),
           ),
 'less' :
@@ -884,7 +884,7 @@ def make_arrays(funcdict):
                 funclist.append('%s_%s' % (tname, name))
 
             for x in t.in_ + t.out:
-                siglist.append('PyArray_%s' % (english_upper(chartoname[x]),))
+                siglist.append('NPY_%s' % (english_upper(chartoname[x]),))
 
             k += 1
 

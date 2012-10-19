@@ -46,7 +46,7 @@ add_newdoc('numpy.core.umath', 'absolute',
 
     >>> import matplotlib.pyplot as plt
 
-    >>> x = np.linspace(-10, 10, 101)
+    >>> x = np.linspace(start=-10, stop=10, num=101)
     >>> plt.plot(x, np.absolute(x))
     >>> plt.show()
 
@@ -71,7 +71,7 @@ add_newdoc('numpy.core.umath', 'add',
 
     Returns
     -------
-    y : ndarray or scalar
+    add : ndarray or scalar
         The sum of `x1` and `x2`, element-wise.  Returns a scalar if
         both  `x1` and `x2` are scalars.
 
@@ -173,7 +173,7 @@ add_newdoc('numpy.core.umath', 'arccosh',
 
     Returns
     -------
-    y : ndarray
+    arccosh : ndarray
         Array of the same shape as `x`.
 
     See Also

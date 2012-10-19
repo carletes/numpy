@@ -706,16 +706,16 @@ _default_compilers = (
     ('win32', ('gnu','intelv','absoft','compaqv','intelev','gnu95','g95',
                'intelvem', 'intelem')),
     ('cygwin.*', ('gnu','intelv','absoft','compaqv','intelev','gnu95','g95')),
-    ('linux.*', ('gnu','intel','lahey','pg','absoft','nag','vast','compaq',
-                'intele','intelem','gnu95','g95','pathf95')),
-    ('darwin.*', ('nag', 'absoft', 'ibm', 'intel', 'gnu', 'gnu95', 'g95', 'pg')),
+    ('linux.*', ('gnu95','intel','lahey','pg','absoft','nag','vast','compaq',
+                'intele','intelem','gnu','g95','pathf95')),
+    ('darwin.*', ('gnu95', 'nag', 'absoft', 'ibm', 'intel', 'gnu', 'g95', 'pg')),
     ('sunos.*', ('sun','gnu','gnu95','g95')),
     ('irix.*', ('mips','gnu','gnu95',)),
     ('aix.*', ('ibm','gnu','gnu95',)),
     # os.name mappings
     ('posix', ('gnu','gnu95',)),
     ('nt', ('gnu','gnu95',)),
-    ('mac', ('gnu','gnu95','pg')),
+    ('mac', ('gnu95','gnu','pg')),
     )
 
 fcompiler_class = None
@@ -814,6 +814,9 @@ def get_default_fcompiler(osname=None, platform=None, requiref90=False,
                                               c_compiler=c_compiler)
     return compiler_type
 
+# Flag to avoid rechecking for Fortran compiler every time
+failed_fcompiler = False
+
 def new_fcompiler(plat=None,
                   compiler=None,
                   verbose=0,
@@ -824,6 +827,10 @@ def new_fcompiler(plat=None,
     """Generate an instance of some FCompiler subclass for the supplied
     platform/compiler combination.
     """
+    global failed_fcompiler
+    if failed_fcompiler:
+        return None
+
     load_all_fcompiler_classes()
     if plat is None:
         plat = os.name
@@ -841,6 +848,7 @@ def new_fcompiler(plat=None,
             msg = msg + " Supported compilers are: %s)" \
                   % (','.join(fcompiler_class.keys()))
         log.warn(msg)
+        failed_fcompiler = True
         return None
 
     compiler = klass(verbose=verbose, dry_run=dry_run, force=force)

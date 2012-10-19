@@ -18,6 +18,7 @@ import function_base
 import numpy.matrixlib as matrix
 from function_base import diff
 from numpy.lib._compiled_base import ravel_multi_index, unravel_index
+from numpy.lib.stride_tricks import as_strided
 makemat = matrix.matrix
 
 def ix_(*args):
@@ -531,37 +532,20 @@ class ndindex(object):
     (2, 1, 0)
 
     """
+    def __init__(self, *shape):
+        x = as_strided(_nx.zeros(1), shape=shape, strides=_nx.zeros_like(shape))
+        self._it = _nx.nditer(x, flags=['multi_index'], order='C')
 
-    def __init__(self, *args):
-        if len(args) == 1 and isinstance(args[0], tuple):
-            args = args[0]
-        self.nd = len(args)
-        self.ind = [0]*self.nd
-        self.index = 0
-        self.maxvals = args
-        tot = 1
-        for k in range(self.nd):
-            tot *= args[k]
-        self.total = tot
-
-    def _incrementone(self, axis):
-        if (axis < 0):  # base case
-            return
-        if (self.ind[axis] < self.maxvals[axis]-1):
-            self.ind[axis] += 1
-        else:
-            self.ind[axis] = 0
-            self._incrementone(axis-1)
+    def __iter__(self):
+        return self
 
     def ndincr(self):
         """
         Increment the multi-dimensional index by one.
 
-        `ndincr` takes care of the "wrapping around" of the axes.
-        It is called by `ndindex.next` and not normally used directly.
-
+        This method is for backward compatibility only: do not use.
         """
-        self._incrementone(self.nd-1)
+        self.next()
 
     def next(self):
         """
@@ -573,17 +557,8 @@ class ndindex(object):
             Returns a tuple containing the indices of the current iteration.
 
         """
-        if (self.index >= self.total):
-            raise StopIteration
-        val = tuple(self.ind)
-        self.index += 1
-        self.ndincr()
-        return val
-
-    def __iter__(self):
-        return self
-
-
+        self._it.next()
+        return self._it.multi_index
 
 
 # You can do all this with slice() plus a few special objects,
@@ -658,9 +633,8 @@ s_ = IndexExpression(maketuple=False)
 # The following functions complement those in twodim_base, but are
 # applicable to N-dimensions.
 
-def fill_diagonal(a, val):
-    """
-    Fill the main diagonal of the given array of any dimensionality.
+def fill_diagonal(a, val, wrap=False):
+    """Fill the main diagonal of the given array of any dimensionality.
 
     For an array `a` with ``a.ndim > 2``, the diagonal is the list of
     locations with indices ``a[i, i, ..., i]`` all identical. This function
@@ -674,6 +648,10 @@ def fill_diagonal(a, val):
     val : scalar
       Value to be written on the diagonal, its type must be compatible with
       that of the array a.
+
+    wrap: bool For tall matrices in NumPy version up to 1.6.2, the
+      diagonal "wrapped" after N columns. You can have this behavior
+      with this option. This affect only tall matrices.
 
     See also
     --------
@@ -716,13 +694,42 @@ def fill_diagonal(a, val):
            [0, 0, 0],
            [0, 0, 4]])
 
+    # tall matrices no wrap
+    >>> a = np.zeros((5, 3),int)
+    >>> fill_diagonal(a, 4)
+    array([[4, 0, 0],
+           [0, 4, 0],
+           [0, 0, 4],
+           [0, 0, 0],
+           [0, 0, 0]])
+
+    # tall matrices wrap
+    >>> a = np.zeros((5, 3),int)
+    >>> fill_diagonal(a, 4)
+    array([[4, 0, 0],
+           [0, 4, 0],
+           [0, 0, 4],
+           [0, 0, 0],
+           [4, 0, 0]])
+
+    # wide matrices
+    >>> a = np.zeros((3, 5),int)
+    >>> fill_diagonal(a, 4)
+    array([[4, 0, 0, 0, 0],
+           [0, 4, 0, 0, 0],
+           [0, 0, 4, 0, 0]])
+
     """
     if a.ndim < 2:
         raise ValueError("array must be at least 2-d")
+    end = None
     if a.ndim == 2:
         # Explicit, fast formula for the common case.  For 2-d arrays, we
         # accept rectangular ones.
         step = a.shape[1] + 1
+        #This is needed to don't have tall matrix have the diagonal wrap.
+        if not wrap:
+            end = a.shape[1] * a.shape[1]
     else:
         # For more than d=2, the strided formula is only valid for arrays with
         # all dimensions equal, so we check first.
@@ -731,7 +738,7 @@ def fill_diagonal(a, val):
         step = 1 + (cumprod(a.shape[:-1])).sum()
 
     # Write the value out into the diagonal.
-    a.flat[::step] = val
+    a.flat[:end:step] = val
 
 
 def diag_indices(n, ndim=2):

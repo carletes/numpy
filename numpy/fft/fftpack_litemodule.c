@@ -1,3 +1,5 @@
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
+
 #include "fftpack.h"
 #include "Python.h"
 #include "numpy/arrayobject.h"
@@ -22,11 +24,11 @@ fftpack_cfftf(PyObject *NPY_UNUSED(self), PyObject *args)
         return NULL;
     }
     data = (PyArrayObject *)PyArray_CopyFromObject(op1,
-            PyArray_CDOUBLE, 1, 0);
+            NPY_CDOUBLE, 1, 0);
     if (data == NULL) {
         return NULL;
     }
-    descr = PyArray_DescrFromType(PyArray_DOUBLE);
+    descr = PyArray_DescrFromType(NPY_DOUBLE);
     if (PyArray_AsCArray(&op2, (void *)&wsave, &nsave, 1, descr) == -1) {
         goto fail;
     }
@@ -34,14 +36,14 @@ fftpack_cfftf(PyObject *NPY_UNUSED(self), PyObject *args)
         goto fail;
     }
 
-    npts = data->dimensions[data->nd - 1];
+    npts = PyArray_DIM(data, PyArray_NDIM(data) - 1);
     if (nsave != npts*4 + 15) {
         PyErr_SetString(ErrorObject, "invalid work array for fft size");
         goto fail;
     }
 
     nrepeats = PyArray_SIZE(data)/npts;
-    dptr = (double *)data->data;
+    dptr = (double *)PyArray_DATA(data);
     NPY_SIGINT_ON;
     for (i = 0; i < nrepeats; i++) {
         cfftf(npts, dptr, wsave);
@@ -73,11 +75,11 @@ fftpack_cfftb(PyObject *NPY_UNUSED(self), PyObject *args)
         return NULL;
     }
     data = (PyArrayObject *)PyArray_CopyFromObject(op1,
-            PyArray_CDOUBLE, 1, 0);
+            NPY_CDOUBLE, 1, 0);
     if (data == NULL) {
         return NULL;
     }
-    descr = PyArray_DescrFromType(PyArray_DOUBLE);
+    descr = PyArray_DescrFromType(NPY_DOUBLE);
     if (PyArray_AsCArray(&op2, (void *)&wsave, &nsave, 1, descr) == -1) {
         goto fail;
     }
@@ -85,14 +87,14 @@ fftpack_cfftb(PyObject *NPY_UNUSED(self), PyObject *args)
         goto fail;
     }
 
-    npts = data->dimensions[data->nd - 1];
+    npts = PyArray_DIM(data, PyArray_NDIM(data) - 1);
     if (nsave != npts*4 + 15) {
         PyErr_SetString(ErrorObject, "invalid work array for fft size");
         goto fail;
     }
 
     nrepeats = PyArray_SIZE(data)/npts;
-    dptr = (double *)data->data;
+    dptr = (double *)PyArray_DATA(data);
     NPY_SIGINT_ON;
     for (i = 0; i < nrepeats; i++) {
         cfftb(npts, dptr, wsave);
@@ -123,13 +125,13 @@ fftpack_cffti(PyObject *NPY_UNUSED(self), PyObject *args)
     /*Magic size needed by cffti*/
     dim = 4*n + 15;
     /*Create a 1 dimensional array of dimensions of type double*/
-    op = (PyArrayObject *)PyArray_SimpleNew(1, &dim, PyArray_DOUBLE);
+    op = (PyArrayObject *)PyArray_SimpleNew(1, &dim, NPY_DOUBLE);
     if (op == NULL) {
         return NULL;
     }
 
     NPY_SIGINT_ON;
-    cffti(n, (double *)((PyArrayObject*)op)->data);
+    cffti(n, (double *)PyArray_DATA((PyArrayObject*)op));
     NPY_SIGINT_OFF;
 
     return (PyObject *)op;
@@ -151,18 +153,19 @@ fftpack_rfftf(PyObject *NPY_UNUSED(self), PyObject *args)
         return NULL;
     }
     data = (PyArrayObject *)PyArray_ContiguousFromObject(op1,
-            PyArray_DOUBLE, 1, 0);
+            NPY_DOUBLE, 1, 0);
     if (data == NULL) {
         return NULL;
     }
-    npts = data->dimensions[data->nd-1];
-    data->dimensions[data->nd - 1] = npts/2 + 1;
-    ret = (PyArrayObject *)PyArray_Zeros(data->nd, data->dimensions,
-            PyArray_DescrFromType(PyArray_CDOUBLE), 0);
-    data->dimensions[data->nd - 1] = npts;
-    rstep = (ret->dimensions[ret->nd - 1])*2;
+    /* FIXME, direct access changing contents of data->dimensions */
+    npts = PyArray_DIM(data, PyArray_NDIM(data) - 1);
+    PyArray_DIMS(data)[PyArray_NDIM(data) - 1] = npts/2 + 1;
+    ret = (PyArrayObject *)PyArray_Zeros(PyArray_NDIM(data),
+            PyArray_DIMS(data), PyArray_DescrFromType(NPY_CDOUBLE), 0);
+    PyArray_DIMS(data)[PyArray_NDIM(data) - 1] = npts;
+    rstep = PyArray_DIM(ret, PyArray_NDIM(ret) - 1)*2;
 
-    descr = PyArray_DescrFromType(PyArray_DOUBLE);
+    descr = PyArray_DescrFromType(NPY_DOUBLE);
     if (PyArray_AsCArray(&op2, (void *)&wsave, &nsave, 1, descr) == -1) {
         goto fail;
     }
@@ -175,8 +178,8 @@ fftpack_rfftf(PyObject *NPY_UNUSED(self), PyObject *args)
     }
 
     nrepeats = PyArray_SIZE(data)/npts;
-    rptr = (double *)ret->data;
-    dptr = (double *)data->data;
+    rptr = (double *)PyArray_DATA(ret);
+    dptr = (double *)PyArray_DATA(data);
 
 
     NPY_SIGINT_ON;
@@ -217,15 +220,15 @@ fftpack_rfftb(PyObject *NPY_UNUSED(self), PyObject *args)
         return NULL;
     }
     data = (PyArrayObject *)PyArray_ContiguousFromObject(op1,
-            PyArray_CDOUBLE, 1, 0);
+            NPY_CDOUBLE, 1, 0);
     if (data == NULL) {
         return NULL;
     }
-    npts = data->dimensions[data->nd - 1];
-    ret = (PyArrayObject *)PyArray_Zeros(data->nd, data->dimensions,
-            PyArray_DescrFromType(PyArray_DOUBLE), 0);
+    npts = PyArray_DIM(data, PyArray_NDIM(data) - 1);
+    ret = (PyArrayObject *)PyArray_Zeros(PyArray_NDIM(data), PyArray_DIMS(data),
+            PyArray_DescrFromType(NPY_DOUBLE), 0);
 
-    descr = PyArray_DescrFromType(PyArray_DOUBLE);
+    descr = PyArray_DescrFromType(NPY_DOUBLE);
     if (PyArray_AsCArray(&op2, (void *)&wsave, &nsave, 1, descr) == -1) {
         goto fail;
     }
@@ -238,8 +241,8 @@ fftpack_rfftb(PyObject *NPY_UNUSED(self), PyObject *args)
     }
 
     nrepeats = PyArray_SIZE(ret)/npts;
-    rptr = (double *)ret->data;
-    dptr = (double *)data->data;
+    rptr = (double *)PyArray_DATA(ret);
+    dptr = (double *)PyArray_DATA(data);
 
     NPY_SIGINT_ON;
     for (i = 0; i < nrepeats; i++) {
@@ -277,12 +280,12 @@ fftpack_rffti(PyObject *NPY_UNUSED(self), PyObject *args)
   /*Magic size needed by rffti*/
   dim = 2*n + 15;
   /*Create a 1 dimensional array of dimensions of type double*/
-  op = (PyArrayObject *)PyArray_SimpleNew(1, &dim, PyArray_DOUBLE);
+  op = (PyArrayObject *)PyArray_SimpleNew(1, &dim, NPY_DOUBLE);
   if (op == NULL) {
       return NULL;
   }
   NPY_SIGINT_ON;
-  rffti(n, (double *)((PyArrayObject*)op)->data);
+  rffti(n, (double *)PyArray_DATA((PyArrayObject*)op));
   NPY_SIGINT_OFF;
 
   return (PyObject *)op;
@@ -323,7 +326,7 @@ static struct PyModuleDef moduledef = {
 /* Initialization function for the module */
 #if PY_MAJOR_VERSION >= 3
 #define RETVAL m
-PyObject *PyInit_fftpack_lite(void)
+PyMODINIT_FUNC PyInit_fftpack_lite(void)
 #else
 #define RETVAL
 PyMODINIT_FUNC

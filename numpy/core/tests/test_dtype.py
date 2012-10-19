@@ -1,3 +1,4 @@
+import sys
 import numpy as np
 from numpy.testing import *
 
@@ -32,6 +33,18 @@ class TestBuiltin(TestCase):
             else:
                 self.assertTrue(dt.byteorder != dt3.byteorder, "bogus test")
                 assert_dtype_equal(dt, dt3)
+
+    def test_equivalent_dtype_hashing(self):
+        # Make sure equivalent dtypes with different type num hash equal
+        uintp = np.dtype(np.uintp)
+        if uintp.itemsize == 4:
+            left = uintp
+            right = np.dtype(np.uint32)
+        else:
+            left = uintp
+            right = np.dtype(np.ulonglong)
+        self.assertTrue(left == right)
+        self.assertTrue(hash(left) == hash(right))
 
     def test_invalid_types(self):
         # Make sure invalid type strings raise exceptions
@@ -399,6 +412,35 @@ class TestString(TestCase):
         dt = np.dtype([('a', '<M8[D]'), ('b', '<m8[us]')])
         assert_equal(repr(dt),
                     "dtype([('a', '<M8[D]'), ('b', '<m8[us]')])")
+
+    @dec.skipif(sys.version_info[0] > 2)
+    def test_dtype_str_with_long_in_shape(self):
+        # Pull request #376
+        dt = np.dtype('(1L,)i4')
+
+
+class TestDtypeAttributeDeletion(object):
+
+    def test_dtype_non_writable_attributes_deletion(self):
+        dt = np.dtype(np.double)
+        attr = ["subdtype", "descr", "str", "name", "base", "shape",
+                "isbuiltin", "isnative", "isalignedstruct", "fields",
+                "metadata", "hasobject"]
+
+        if sys.version[:3] == '2.4':
+            error = TypeError
+        else:
+            error = AttributeError
+
+        for s in attr:
+            assert_raises(error, delattr, dt, s)
+
+
+    def test_dtype_writable_attributes_deletion(self):
+        dt = np.dtype(np.double)
+        attr = ["names"]
+        for s in attr:
+            assert_raises(AttributeError, delattr, dt, s)
 
 
 if __name__ == "__main__":

@@ -14,10 +14,10 @@
 #include "Python.h"
 #include "structmember.h"
 
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #define _MULTIARRAYMODULE
-#include <numpy/ndarrayobject.h>
-#include <numpy/npy_3kcompat.h>
+#include <numpy/arrayobject.h>
+#include <npy_pycompat.h>
 #include "convert_datatype.h"
 
 #include "lowlevel_strided_loops.h"
@@ -101,27 +101,27 @@
 #define NPY_ITFLAG_REDUCE       0x1000
 /* Reduce iteration doesn't need to recalculate reduce loops next time */
 #define NPY_ITFLAG_REUSE_REDUCE_LOOPS 0x2000
-/* The iterator has one or more operands with NPY_ITER_USE_MASKNA set */
-#define NPY_ITFLAG_HAS_MASKNA_OP 0x4000
 
 /* Internal iterator per-operand iterator flags */
 
 /* The operand will be written to */
-#define NPY_OP_ITFLAG_WRITE        0x01
+#define NPY_OP_ITFLAG_WRITE        0x0001
 /* The operand will be read from */
-#define NPY_OP_ITFLAG_READ         0x02
+#define NPY_OP_ITFLAG_READ         0x0002
 /* The operand needs type conversion/byte swapping/alignment */
-#define NPY_OP_ITFLAG_CAST         0x04
+#define NPY_OP_ITFLAG_CAST         0x0004
 /* The operand never needs buffering */
-#define NPY_OP_ITFLAG_BUFNEVER     0x08
+#define NPY_OP_ITFLAG_BUFNEVER     0x0008
 /* The operand is aligned */
-#define NPY_OP_ITFLAG_ALIGNED      0x10
+#define NPY_OP_ITFLAG_ALIGNED      0x0010
 /* The operand is being reduced */
-#define NPY_OP_ITFLAG_REDUCE       0x20
+#define NPY_OP_ITFLAG_REDUCE       0x0020
 /* The operand is for temporary use, does not have a backing array */
-#define NPY_OP_ITFLAG_VIRTUAL      0x40
+#define NPY_OP_ITFLAG_VIRTUAL      0x0040
 /* The operand requires masking when copying buffer -> array */
-#define NPY_OP_ITFLAG_WRITEMASKED  0x80
+#define NPY_OP_ITFLAG_WRITEMASKED  0x0080
+/* The operand's data pointer is pointing into its buffer */
+#define NPY_OP_ITFLAG_USINGBUFFER  0x0100
 
 /*
  * The data layout of the iterator is fully specified by
@@ -135,7 +135,7 @@
 struct NpyIter_InternalOnly {
     /* Initial fixed position data */
     npy_uint32 itflags;
-    npy_uint8 ndim, nop, first_maskna_op;
+    npy_uint8 ndim, nop;
     npy_int8 maskop;
     npy_intp itersize, iterstart, iterend;
     /* iterindex is only used if RANGED or BUFFERED is set */
@@ -147,10 +147,10 @@ struct NpyIter_InternalOnly {
 typedef struct NpyIter_AD NpyIter_AxisData;
 typedef struct NpyIter_BD NpyIter_BufferData;
 
+typedef npy_int16 npyiter_opitflags;
+
 /* Byte sizes of the iterator members */
 #define NIT_PERM_SIZEOF(itflags, ndim, nop) \
-        NPY_INTP_ALIGNED(NPY_MAXDIMS)
-#define NIT_MASKNA_INDICES_SIZEOF(itflags, ndim, nop) \
         NPY_INTP_ALIGNED(NPY_MAXDIMS)
 #define NIT_DTYPES_SIZEOF(itflags, ndim, nop) \
         ((NPY_SIZEOF_INTP)*(nop))
@@ -161,19 +161,16 @@ typedef struct NpyIter_BD NpyIter_BufferData;
 #define NIT_OPERANDS_SIZEOF(itflags, ndim, nop) \
         ((NPY_SIZEOF_INTP)*(nop))
 #define NIT_OPITFLAGS_SIZEOF(itflags, ndim, nop) \
-        (NPY_INTP_ALIGNED(nop))
+        (NPY_INTP_ALIGNED(sizeof(npyiter_opitflags) * nop))
 #define NIT_BUFFERDATA_SIZEOF(itflags, ndim, nop) \
         ((itflags&NPY_ITFLAG_BUFFER) ? ((NPY_SIZEOF_INTP)*(6 + 9*nop)) : 0)
 
 /* Byte offsets of the iterator members starting from iter->iter_flexdata */
 #define NIT_PERM_OFFSET() \
         (0)
-#define NIT_MASKNA_INDICES_OFFSET(itflags, ndim, nop) \
+#define NIT_DTYPES_OFFSET(itflags, ndim, nop) \
         (NIT_PERM_OFFSET() + \
          NIT_PERM_SIZEOF(itflags, ndim, nop))
-#define NIT_DTYPES_OFFSET(itflags, ndim, nop) \
-        (NIT_MASKNA_INDICES_OFFSET(itflags, ndim, nop) + \
-         NIT_MASKNA_INDICES_SIZEOF(itflags, ndim, nop))
 #define NIT_RESETDATAPTR_OFFSET(itflags, ndim, nop) \
         (NIT_DTYPES_OFFSET(itflags, ndim, nop) + \
          NIT_DTYPES_SIZEOF(itflags, ndim, nop))
@@ -200,8 +197,6 @@ typedef struct NpyIter_BD NpyIter_BufferData;
         ((iter)->ndim)
 #define NIT_NOP(iter) \
         ((iter)->nop)
-#define NIT_FIRST_MASKNA_OP(iter) \
-        ((iter)->first_maskna_op)
 #define NIT_MASKOP(iter) \
         ((iter)->maskop)
 #define NIT_ITERSIZE(iter) \
@@ -214,8 +209,6 @@ typedef struct NpyIter_BD NpyIter_BufferData;
         (iter->iterindex)
 #define NIT_PERM(iter)  ((npy_int8 *)( \
         &(iter)->iter_flexdata + NIT_PERM_OFFSET()))
-#define NIT_MASKNA_INDICES(iter) ((npy_int8 *)( \
-        &(iter)->iter_flexdata + NIT_MASKNA_INDICES_OFFSET(itflags, ndim, nop)))
 #define NIT_DTYPES(iter) ((PyArray_Descr **)( \
         &(iter)->iter_flexdata + NIT_DTYPES_OFFSET(itflags, ndim, nop)))
 #define NIT_RESETDATAPTR(iter) ((char **)( \
@@ -224,8 +217,8 @@ typedef struct NpyIter_BD NpyIter_BufferData;
         &(iter)->iter_flexdata + NIT_BASEOFFSETS_OFFSET(itflags, ndim, nop)))
 #define NIT_OPERANDS(iter) ((PyArrayObject **)( \
         &(iter)->iter_flexdata + NIT_OPERANDS_OFFSET(itflags, ndim, nop)))
-#define NIT_OPITFLAGS(iter) ( \
-        &(iter)->iter_flexdata + NIT_OPITFLAGS_OFFSET(itflags, ndim, nop))
+#define NIT_OPITFLAGS(iter) ((npyiter_opitflags *)( \
+        &(iter)->iter_flexdata + NIT_OPITFLAGS_OFFSET(itflags, ndim, nop)))
 #define NIT_BUFFERDATA(iter) ((NpyIter_BufferData *)( \
         &(iter)->iter_flexdata + NIT_BUFFERDATA_OFFSET(itflags, ndim, nop)))
 #define NIT_AXISDATA(iter) ((NpyIter_AxisData *)( \

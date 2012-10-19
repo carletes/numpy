@@ -1,18 +1,18 @@
 __all__ = ['newaxis', 'ndarray', 'flatiter', 'nditer', 'nested_iters', 'ufunc',
-           'arange', 'array', 'zeros', 'count_nonzero', 'count_reduce_items',
+           'arange', 'array', 'zeros', 'count_nonzero',
            'empty', 'broadcast', 'dtype', 'fromstring', 'fromfile',
            'frombuffer', 'int_asbuffer', 'where', 'argwhere', 'copyto',
            'concatenate', 'fastCopyAndTranspose', 'lexsort', 'set_numeric_ops',
            'can_cast', 'promote_types', 'min_scalar_type', 'result_type',
            'asarray', 'asanyarray', 'ascontiguousarray', 'asfortranarray',
-           'isfortran', 'isna', 'empty_like', 'zeros_like', 'ones_like',
+           'isfortran', 'empty_like', 'zeros_like', 'ones_like',
            'correlate', 'convolve', 'inner', 'dot', 'einsum', 'outer', 'vdot',
            'alterdot', 'restoredot', 'roll', 'rollaxis', 'cross', 'tensordot',
            'array2string', 'get_printoptions', 'set_printoptions',
            'array_repr', 'array_str', 'set_string_function',
            'little_endian', 'require',
            'fromiter', 'array_equal', 'array_equiv',
-           'indices', 'fromfunction',
+           'indices', 'fromfunction', 'isclose',
            'load', 'loads', 'isscalar', 'binary_repr', 'base_repr',
            'ones', 'identity', 'allclose', 'compare_chararrays', 'putmask',
            'seterr', 'geterr', 'setbufsize', 'getbufsize',
@@ -29,6 +29,7 @@ import umath
 from umath import *
 import numerictypes
 from numerictypes import *
+
 
 if sys.version_info[0] < 3:
     __all__.extend(['getbuffer', 'newbuffer'])
@@ -62,7 +63,7 @@ copyto = multiarray.copyto
 ufunc = type(sin)
 
 
-def zeros_like(a, dtype=None, order='K', subok=True, maskna=False):
+def zeros_like(a, dtype=None, order='K', subok=True):
     """
     Return an array of zeros with the same shape and type as a given array.
 
@@ -74,14 +75,14 @@ def zeros_like(a, dtype=None, order='K', subok=True, maskna=False):
         The shape and data-type of `a` define these same attributes of
         the returned array.
     dtype : data-type, optional
+        .. versionadded:: 1.6.0
         Overrides the data type of the result.
     order : {'C', 'F', 'A', or 'K'}, optional
+        .. versionadded:: 1.6.0
         Overrides the memory layout of the result. 'C' means C-order,
         'F' means F-order, 'A' means 'F' if `a` is Fortran contiguous,
         'C' otherwise. 'K' means match the layout of `a` as closely
         as possible.
-    maskna : boolean
-        If this is true, the returned array will have an NA mask.
 
     Returns
     -------
@@ -114,11 +115,11 @@ def zeros_like(a, dtype=None, order='K', subok=True, maskna=False):
     array([ 0.,  0.,  0.])
 
     """
-    res = empty_like(a, dtype=dtype, order=order, subok=subok, maskna=maskna)
+    res = empty_like(a, dtype=dtype, order=order, subok=subok)
     multiarray.copyto(res, 0, casting='unsafe')
     return res
 
-def ones(shape, dtype=None, order='C', maskna=False):
+def ones(shape, dtype=None, order='C'):
     """
     Return a new array of given shape and type, filled with ones.
 
@@ -146,11 +147,11 @@ def ones(shape, dtype=None, order='C', maskna=False):
            [ 1.,  1.]])
 
     """
-    a = empty(shape, dtype, order, maskna)
+    a = empty(shape, dtype, order)
     multiarray.copyto(a, 1, casting='unsafe')
     return a
 
-def ones_like(a, dtype=None, order='K', subok=True, maskna=False):
+def ones_like(a, dtype=None, order='K', subok=True):
     """
     Return an array of ones with the same shape and type as a given array.
 
@@ -162,14 +163,14 @@ def ones_like(a, dtype=None, order='K', subok=True, maskna=False):
         The shape and data-type of `a` define these same attributes of
         the returned array.
     dtype : data-type, optional
+        .. versionadded:: 1.6.0
         Overrides the data type of the result.
     order : {'C', 'F', 'A', or 'K'}, optional
+        .. versionadded:: 1.6.0
         Overrides the memory layout of the result. 'C' means C-order,
         'F' means F-order, 'A' means 'F' if `a` is Fortran contiguous,
         'C' otherwise. 'K' means match the layout of `a` as closely
         as possible.
-    maskna : boolean
-        If this is true, the returned array will have an NA mask.
 
     Returns
     -------
@@ -202,7 +203,7 @@ def ones_like(a, dtype=None, order='K', subok=True, maskna=False):
     array([ 1.,  1.,  1.])
 
     """
-    res = empty_like(a, dtype=dtype, order=order, subok=subok, maskna=maskna)
+    res = empty_like(a, dtype=dtype, order=order, subok=subok)
     multiarray.copyto(res, 1, casting='unsafe')
     return res
 
@@ -229,7 +230,6 @@ arange = multiarray.arange
 array = multiarray.array
 zeros = multiarray.zeros
 count_nonzero = multiarray.count_nonzero
-count_reduce_items = multiarray.count_reduce_items
 empty = multiarray.empty
 empty_like = multiarray.empty_like
 fromstring = multiarray.fromstring
@@ -252,9 +252,8 @@ lexsort = multiarray.lexsort
 compare_chararrays = multiarray.compare_chararrays
 putmask = multiarray.putmask
 einsum = multiarray.einsum
-isna = multiarray.isna
 
-def asarray(a, dtype=None, order=None, maskna=None, ownmaskna=False):
+def asarray(a, dtype=None, order=None):
     """
     Convert the input to an array.
 
@@ -269,13 +268,6 @@ def asarray(a, dtype=None, order=None, maskna=None, ownmaskna=False):
     order : {'C', 'F'}, optional
         Whether to use row-major ('C') or column-major ('F' for FORTRAN)
         memory representation.  Defaults to 'C'.
-   maskna : bool or None, optional
-        If this is set to True, it forces the array to have an NA mask.
-        If this is set to False, it forces the array to not have an NA
-        mask.
-    ownmaskna : bool, optional
-        If this is set to True, forces the array to have a mask which
-        it owns.
 
     Returns
     -------
@@ -329,10 +321,9 @@ def asarray(a, dtype=None, order=None, maskna=None, ownmaskna=False):
     True
 
     """
-    return array(a, dtype, copy=False, order=order,
-                            maskna=maskna, ownmaskna=ownmaskna)
+    return array(a, dtype, copy=False, order=order)
 
-def asanyarray(a, dtype=None, order=None, maskna=None, ownmaskna=False):
+def asanyarray(a, dtype=None, order=None):
     """
     Convert the input to an ndarray, but pass ndarray subclasses through.
 
@@ -347,13 +338,6 @@ def asanyarray(a, dtype=None, order=None, maskna=None, ownmaskna=False):
     order : {'C', 'F'}, optional
         Whether to use row-major ('C') or column-major ('F') memory
         representation.  Defaults to 'C'.
-   maskna : bool or None, optional
-        If this is set to True, it forces the array to have an NA mask.
-        If this is set to False, it forces the array to not have an NA
-        mask.
-    ownmaskna : bool, optional
-        If this is set to True, forces the array to have a mask which
-        it owns.
 
     Returns
     -------
@@ -389,10 +373,9 @@ def asanyarray(a, dtype=None, order=None, maskna=None, ownmaskna=False):
     True
 
     """
-    return array(a, dtype, copy=False, order=order, subok=True,
-                                maskna=maskna, ownmaskna=ownmaskna)
+    return array(a, dtype, copy=False, order=order, subok=True)
 
-def ascontiguousarray(a, dtype=None, maskna=None, ownmaskna=False):
+def ascontiguousarray(a, dtype=None):
     """
     Return a contiguous array in memory (C order).
 
@@ -402,13 +385,6 @@ def ascontiguousarray(a, dtype=None, maskna=None, ownmaskna=False):
         Input array.
     dtype : str or dtype object, optional
         Data-type of returned array.
-   maskna : bool or None, optional
-        If this is set to True, it forces the array to have an NA mask.
-        If this is set to False, it forces the array to not have an NA
-        mask.
-    ownmaskna : bool, optional
-        If this is set to True, forces the array to have a mask which
-        it owns.
 
     Returns
     -------
@@ -433,10 +409,9 @@ def ascontiguousarray(a, dtype=None, maskna=None, ownmaskna=False):
     True
 
     """
-    return array(a, dtype, copy=False, order='C', ndmin=1,
-                                maskna=maskna, ownmaskna=ownmaskna)
+    return array(a, dtype, copy=False, order='C', ndmin=1)
 
-def asfortranarray(a, dtype=None, maskna=None, ownmaskna=False):
+def asfortranarray(a, dtype=None):
     """
     Return an array laid out in Fortran order in memory.
 
@@ -446,13 +421,6 @@ def asfortranarray(a, dtype=None, maskna=None, ownmaskna=False):
         Input array.
     dtype : str or dtype object, optional
         By default, the data-type is inferred from the input data.
-   maskna : bool or None, optional
-        If this is set to True, it forces the array to have an NA mask.
-        If this is set to False, it forces the array to not have an NA
-        mask.
-    ownmaskna : bool, optional
-        If this is set to True, forces the array to have a mask which
-        it owns.
 
     Returns
     -------
@@ -477,8 +445,7 @@ def asfortranarray(a, dtype=None, maskna=None, ownmaskna=False):
     True
 
     """
-    return array(a, dtype, copy=False, order='F', ndmin=1,
-                                maskna=maskna, ownmaskna=ownmaskna)
+    return array(a, dtype, copy=False, order='F', ndmin=1)
 
 def require(a, dtype=None, requirements=None):
     """
@@ -733,9 +700,10 @@ def correlate(a, v, mode='valid', old_behavior=False):
         Refer to the `convolve` docstring.  Note that the default
         is `valid`, unlike `convolve`, which uses `full`.
     old_behavior : bool
-        If True, uses the old behavior from Numeric, (correlate(a,v) == correlate(v,
-        a), and the conjugate is not taken for complex arrays). If False, uses
-        the conventional signal processing definition (see note).
+        If True, uses the old behavior from Numeric,
+        (correlate(a,v) == correlate(v,a), and the conjugate is not taken
+        for complex arrays). If False, uses the conventional signal
+        processing definition.
 
     See Also
     --------
@@ -1453,15 +1421,6 @@ def array_repr(arr, max_line_width=None, precision=None, suppress_small=None):
 
     skipdtype = (arr.dtype.type in _typelessdata) and arr.size > 0
 
-    if arr.flags.maskna:
-        whichna = isna(arr)
-        # If nothing is NA, explicitly signal the NA-mask
-        if not any(whichna):
-            lst += ", maskna=True"
-        # If everything is NA, can't skip the dtype
-        if skipdtype and all(whichna):
-            skipdtype = False
-
     if skipdtype:
         return "%s(%s)" % (cName, lst)
     else:
@@ -1663,12 +1622,11 @@ def fromfunction(function, shape, **kwargs):
     Parameters
     ----------
     function : callable
-        The function is called with N parameters, each of which
-        represents the coordinates of the array varying along a
-        specific axis.  For example, if `shape` were ``(2, 2)``, then
-        the parameters would be two arrays, ``[[0, 0], [1, 1]]`` and
-        ``[[0, 1], [0, 1]]``.  `function` must be capable of operating on
-        arrays, and should return a scalar value.
+        The function is called with N parameters, where N is the rank of
+        `shape`.  Each parameter represents the coordinates of the array
+        varying along a specific axis.  For example, if `shape`
+        were ``(2, 2)``, then the parameters in turn be (0, 0), (0, 1),
+        (1, 0), (1, 1).
     shape : (N,) tuple of ints
         Shape of the output array, which also determines the shape of
         the coordinate arrays passed to `function`.
@@ -1678,10 +1636,11 @@ def fromfunction(function, shape, **kwargs):
 
     Returns
     -------
-    out : any
+    fromfunction : any
         The result of the call to `function` is passed back directly.
-        Therefore the type and shape of `out` is completely determined by
-        `function`.
+        Therefore the shape of `fromfunction` is completely determined by
+        `function`.  If `function` returns a scalar value, the shape of
+        `fromfunction` would match the `shape` parameter.
 
     See Also
     --------
@@ -1689,7 +1648,7 @@ def fromfunction(function, shape, **kwargs):
 
     Notes
     -----
-    Keywords other than `shape` and `dtype` are passed to `function`.
+    Keywords other than `dtype` are passed to `function`.
 
     Examples
     --------
@@ -1820,6 +1779,7 @@ def binary_repr(num, width=None):
     '1101'
 
     """
+    # ' <-- unbreak Emacs fontification
     sign = ''
     if num < 0:
         if width is None:
@@ -1925,7 +1885,7 @@ def _maketup(descr, val):
         res = [_maketup(fields[name][0],val) for name in dt.names]
         return tuple(res)
 
-def identity(n, dtype=None, maskna=False):
+def identity(n, dtype=None):
     """
     Return the identity array.
 
@@ -1938,8 +1898,6 @@ def identity(n, dtype=None, maskna=False):
         Number of rows (and columns) in `n` x `n` output.
     dtype : data-type, optional
         Data-type of the output.  Defaults to ``float``.
-    maskna : bool, optional
-        If this is true, the returned array will have an NA mask.
 
     Returns
     -------
@@ -1955,9 +1913,8 @@ def identity(n, dtype=None, maskna=False):
            [ 0.,  0.,  1.]])
 
     """
-    a = zeros((n,n), dtype=dtype, maskna=maskna)
-    a.diagonal()[...] = 1
-    return a
+    from numpy import eye
+    return eye(n, dtype=dtype)
 
 def allclose(a, b, rtol=1.e-5, atol=1.e-8):
     """
@@ -1967,6 +1924,10 @@ def allclose(a, b, rtol=1.e-5, atol=1.e-8):
     relative difference (`rtol` * abs(`b`)) and the absolute difference
     `atol` are added together to compare against the absolute difference
     between `a` and `b`.
+
+    If either array contains one or more NaNs, False is returned.
+    Infs are treated as equal if they are in the same place and of the same
+    sign in both arrays.
 
     Parameters
     ----------
@@ -1979,10 +1940,9 @@ def allclose(a, b, rtol=1.e-5, atol=1.e-8):
 
     Returns
     -------
-    y : bool
+    allclose : bool
         Returns True if the two arrays are equal within the given
-        tolerance; False otherwise. If either array contains NaN, then
-        False is returned.
+        tolerance; False otherwise.
 
     See Also
     --------
@@ -2013,16 +1973,113 @@ def allclose(a, b, rtol=1.e-5, atol=1.e-8):
     """
     x = array(a, copy=False, ndmin=1)
     y = array(b, copy=False, ndmin=1)
+
     xinf = isinf(x)
-    if not all(xinf == isinf(y)):
-        return False
-    if not any(xinf):
-        return all(less_equal(absolute(x-y), atol + rtol * absolute(y)))
-    if not all(x[xinf] == y[xinf]):
-        return False
-    x = x[~xinf]
-    y = y[~xinf]
-    return all(less_equal(absolute(x-y), atol + rtol * absolute(y)))
+    yinf = isinf(y)
+    if any(xinf) or any(yinf):
+        # Check that x and y have inf's only in the same positions
+        if not all(xinf == yinf):
+            return False
+        # Check that sign of inf's in x and y is the same
+        if not all(x[xinf] == y[xinf]):
+            return False
+
+        x = x[~xinf]
+        y = y[~xinf]
+
+    return all(less_equal(abs(x-y), atol + rtol * abs(y)))
+
+def isclose(a, b, rtol=1.e-5, atol=1.e-8, equal_nan=False):
+    """
+    Returns a boolean array where two arrays are element-wise equal within a
+    tolerance.
+
+    The tolerance values are positive, typically very small numbers.  The
+    relative difference (`rtol` * abs(`b`)) and the absolute difference
+    `atol` are added together to compare against the absolute difference
+    between `a` and `b`.
+
+    Parameters
+    ----------
+    a, b : array_like
+        Input arrays to compare.
+    rtol : float
+        The relative tolerance parameter (see Notes).
+    atol : float
+        The absolute tolerance parameter (see Notes).
+    equal_nan : bool
+        Whether to compare NaN's as equal.  If True, NaN's in `a` will be
+        considered equal to NaN's in `b` in the output array.
+
+    Returns
+    -------
+    y : array_like
+        Returns a boolean array of where `a` and `b` are equal within the
+        given tolerance. If both `a` and `b` are scalars, returns a single
+        boolean value.
+
+    See Also
+    --------
+    allclose
+
+    Notes
+    -----
+    .. versionadded:: 1.7.0
+
+    For finite values, isclose uses the following equation to test whether
+    two floating point values are equivalent.
+
+     absolute(`a` - `b`) <= (`atol` + `rtol` * absolute(`b`))
+
+    The above equation is not symmetric in `a` and `b`, so that
+    `isclose(a, b)` might be different from `isclose(b, a)` in
+    some rare cases.
+
+    Examples
+    --------
+    >>> np.isclose([1e10,1e-7], [1.00001e10,1e-8])
+    array([True, False])
+    >>> np.isclose([1e10,1e-8], [1.00001e10,1e-9])
+    array([True, True])
+    >>> np.isclose([1e10,1e-8], [1.0001e10,1e-9])
+    array([False, True])
+    >>> np.isclose([1.0, np.nan], [1.0, np.nan])
+    array([True, False])
+    >>> np.isclose([1.0, np.nan], [1.0, np.nan], equal_nan=True)
+    array([True, True])
+    """
+    def within_tol(x, y, atol, rtol):
+        err = seterr(invalid='ignore')
+        try:
+            result = less_equal(abs(x-y), atol + rtol * abs(y))
+        finally:
+            seterr(**err)
+        if isscalar(a) and isscalar(b):
+            result = bool(result)
+        return result
+
+    x = array(a, copy=False, subok=True, ndmin=1)
+    y = array(b, copy=False, subok=True, ndmin=1)
+    xfin = isfinite(x)
+    yfin = isfinite(y)
+    if all(xfin) and all(yfin):
+        return within_tol(x, y, atol, rtol)
+    else:
+        finite = xfin & yfin
+        cond = zeros_like(finite, subok=True)
+        # Because we're using boolean indexing, x & y must be the same shape.
+        # Ideally, we'd just do x, y = broadcast_arrays(x, y). It's in
+        # lib.stride_tricks, though, so we can't import it here.
+        x = x * ones_like(cond)
+        y = y * ones_like(cond)
+        # Avoid subtraction with infinite/nan values...
+        cond[finite] = within_tol(x[finite], y[finite], atol, rtol)
+        # Check for equality of infinite values...
+        cond[~finite] = (x[~finite] == y[~finite])
+        if equal_nan:
+            # Make NaN == NaN
+            cond[isnan(x) & isnan(y)] = True
+        return cond
 
 def array_equal(a1, a2):
     """
@@ -2159,7 +2216,7 @@ def seterr(all=None, divide=None, over=None, under=None, invalid=None):
     See also
     --------
     seterrcall : Set a callback function for the 'call' mode.
-    geterr, geterrcall
+    geterr, geterrcall, errstate
 
     Notes
     -----
@@ -2292,7 +2349,14 @@ def setbufsize(size):
     return old
 
 def getbufsize():
-    """Return the size of the buffer used in ufuncs.
+    """
+    Return the size of the buffer used in ufuncs.
+
+    Returns
+    -------
+    getbufsize : int
+        Size of ufunc buffer in bytes.
+
     """
     return umath.geterrobj()[0]
 

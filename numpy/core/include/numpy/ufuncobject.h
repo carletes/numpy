@@ -30,7 +30,9 @@ typedef void (PyUFunc_StridedInnerLoopFunc)(
 
 /*
  * The most generic one-dimensional inner loop for
- * a masked standard element-wise ufunc.
+ * a masked standard element-wise ufunc. "Masked" here means that it skips
+ * doing calculations on any items for which the maskptr array has a true
+ * value.
  */
 typedef void (PyUFunc_MaskedStridedInnerLoopFunc)(
                 char **dataptrs, npy_intp *strides,
@@ -255,8 +257,8 @@ typedef struct _tagPyUFuncObject {
         (UFUNC_ERR_WARN << UFUNC_SHIFT_INVALID)
 
 #if NPY_ALLOW_THREADS
-#define NPY_LOOP_BEGIN_THREADS do {if (!(loop->obj & UFUNC_OBJ_NEEDS_API)) _save = PyEval_SaveThread();} while (0)
-#define NPY_LOOP_END_THREADS   do {if (!(loop->obj & UFUNC_OBJ_NEEDS_API)) PyEval_RestoreThread(_save);} while (0)
+#define NPY_LOOP_BEGIN_THREADS do {if (!(loop->obj & UFUNC_OBJ_NEEDS_API)) _save = PyEval_SaveThread();} while (0);
+#define NPY_LOOP_END_THREADS   do {if (!(loop->obj & UFUNC_OBJ_NEEDS_API)) PyEval_RestoreThread(_save);} while (0);
 #else
 #define NPY_LOOP_BEGIN_THREADS
 #define NPY_LOOP_END_THREADS

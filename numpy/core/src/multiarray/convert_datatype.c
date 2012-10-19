@@ -2,15 +2,14 @@
 #include <Python.h>
 #include "structmember.h"
 
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #define _MULTIARRAYMODULE
-#define NPY_NO_PREFIX
 #include "numpy/arrayobject.h"
 #include "numpy/arrayscalars.h"
 
 #include "npy_config.h"
 
-#include "numpy/npy_3kcompat.h"
+#include "npy_pycompat.h"
 
 #include "common.h"
 #include "scalartypes.h"
@@ -81,7 +80,7 @@ PyArray_GetCastFunc(PyArray_Descr *descr, int type_num)
             key = PyInt_FromLong(type_num);
             cobj = PyDict_GetItem(obj, key);
             Py_DECREF(key);
-            if (NpyCapsule_Check(cobj)) {
+            if (cobj && NpyCapsule_Check(cobj)) {
                 castfunc = NpyCapsule_AsVoidPtr(cobj);
             }
         }
@@ -287,7 +286,7 @@ PyArray_AdaptFlexibleDType(PyObject *data_obj, PyArray_Descr *data_dtype,
 /*
  * Must be broadcastable.
  * This code is very similar to PyArray_CopyInto/PyArray_MoveInto
- * except casting is done --- PyArray_BUFSIZE is used
+ * except casting is done --- NPY_BUFSIZE is used
  * as the size of the casting buffer.
  */
 
@@ -352,7 +351,7 @@ PyArray_CanCastSafely(int fromtype, int totype)
 
     from = PyArray_DescrFromType(fromtype);
     /*
-     * cancastto is a PyArray_NOTYPE terminated C-int-array of types that
+     * cancastto is a NPY_NOTYPE terminated C-int-array of types that
      * the data-type can be cast to safely.
      */
     if (from->f->cancastto) {
@@ -504,12 +503,43 @@ type_num_unsigned_to_signed(int type_num)
     }
 }
 
+/*
+ * NOTE: once the UNSAFE_CASTING -> SAME_KIND_CASTING transition is over,
+ * we should remove NPY_INTERNAL_UNSAFE_CASTING_BUT_WARN_UNLESS_SAME_KIND
+ * and PyArray_CanCastTypeTo_impl should be renamed back to
+ * PyArray_CanCastTypeTo.
+ */
+static npy_bool
+PyArray_CanCastTypeTo_impl(PyArray_Descr *from, PyArray_Descr *to,
+                           NPY_CASTING casting);
+
 /*NUMPY_API
  * Returns true if data of type 'from' may be cast to data of type
  * 'to' according to the rule 'casting'.
  */
 NPY_NO_EXPORT npy_bool
 PyArray_CanCastTypeTo(PyArray_Descr *from, PyArray_Descr *to,
+                      NPY_CASTING casting)
+{
+    if (casting == NPY_INTERNAL_UNSAFE_CASTING_BUT_WARN_UNLESS_SAME_KIND) {
+        npy_bool unsafe_ok, same_kind_ok;
+        unsafe_ok = PyArray_CanCastTypeTo_impl(from, to, NPY_UNSAFE_CASTING);
+        same_kind_ok = PyArray_CanCastTypeTo_impl(from, to,
+                                                  NPY_SAME_KIND_CASTING);
+        if (unsafe_ok && !same_kind_ok) {
+            DEPRECATE("Implicitly casting between incompatible kinds. In "
+                      "a future numpy release, this will raise an error. "
+                      "Use casting=\"unsafe\" if this is intentional.");
+        }
+        return unsafe_ok;
+    }
+    else {
+        return PyArray_CanCastTypeTo_impl(from, to, casting);
+    }
+}
+
+static npy_bool
+PyArray_CanCastTypeTo_impl(PyArray_Descr *from, PyArray_Descr *to,
                                                     NPY_CASTING casting)
 {
     /* If unsafe casts are allowed */
@@ -710,11 +740,7 @@ PyArray_CanCastArrayTo(PyArrayObject *arr, PyArray_Descr *to,
 
     /* If it's a scalar, check the value */
     if (PyArray_NDIM(arr) == 0 && !PyArray_HASFIELDS(arr)) {
-        /* Only check the value if it's not masked */
-        if (!PyArray_HASMASKNA(arr) ||
-                NpyMaskValue_IsExposed((npy_mask)*PyArray_MASKNA_DATA(arr))) {
-            return can_cast_scalar_to(from, PyArray_DATA(arr), to, casting);
-        }
+        return can_cast_scalar_to(from, PyArray_DATA(arr), to, casting);
     }
 
     /* Otherwise, use the standard rules */
@@ -734,8 +760,8 @@ PyArray_CanCastScalar(PyTypeObject *from, PyTypeObject *to)
 
     fromtype = _typenum_fromtypeobj((PyObject *)from, 0);
     totype = _typenum_fromtypeobj((PyObject *)to, 0);
-    if (fromtype == PyArray_NOTYPE || totype == PyArray_NOTYPE) {
-        return FALSE;
+    if (fromtype == NPY_NOTYPE || totype == NPY_NOTYPE) {
+        return NPY_FALSE;
     }
     return (npy_bool) PyArray_CanCastSafely(fromtype, totype);
 }
@@ -1333,12 +1359,9 @@ PyArray_MinScalarType(PyArrayObject *arr)
 {
     PyArray_Descr *dtype = PyArray_DESCR(arr);
     /*
-     * If the array isn't a numeric scalar or is a scalar but with
-     * its value masked out, just return the array's dtype.
+     * If the array isn't a numeric scalar, just return the array's dtype.
      */
-    if (PyArray_NDIM(arr) > 0 || !PyTypeNum_ISNUMBER(dtype->type_num) ||
-                    (PyArray_HASMASKNA(arr) && !NpyMaskValue_IsExposed(
-                                    (npy_mask)*PyArray_MASKNA_DATA(arr)))) {
+    if (PyArray_NDIM(arr) > 0 || !PyTypeNum_ISNUMBER(dtype->type_num)) {
         Py_INCREF(dtype);
         return dtype;
     }
@@ -1620,11 +1643,11 @@ NPY_NO_EXPORT int
 PyArray_ValidType(int type)
 {
     PyArray_Descr *descr;
-    int res=TRUE;
+    int res=NPY_TRUE;
 
     descr = PyArray_DescrFromType(type);
     if (descr == NULL) {
-        res = FALSE;
+        res = NPY_FALSE;
     }
     Py_DECREF(descr);
     return res;
@@ -1740,7 +1763,7 @@ NPY_NO_EXPORT int
 PyArray_ObjectType(PyObject *op, int minimum_type)
 {
     PyArray_Descr *dtype = NULL;
-    int ret, contains_na = 0;
+    int ret;
 
     if (minimum_type != NPY_NOTYPE && minimum_type >= 0) {
         dtype = PyArray_DescrFromType(minimum_type);
@@ -1749,14 +1772,11 @@ PyArray_ObjectType(PyObject *op, int minimum_type)
         }
     }
 
-    if (PyArray_DTypeFromObject(op, NPY_MAXDIMS, &contains_na, &dtype) < 0) {
+    if (PyArray_DTypeFromObject(op, NPY_MAXDIMS, &dtype) < 0) {
         return NPY_NOTYPE;
     }
 
-    if (contains_na) {
-        ret = NPY_OBJECT;
-    }
-    else if (dtype == NULL) {
+    if (dtype == NULL) {
         ret = NPY_DEFAULT_TYPE;
     }
     else {
@@ -1828,6 +1848,9 @@ PyArray_ConvertToCommonType(PyObject *op, int *retn)
         else {
             newtype = PyArray_DescrFromObject(otmp, stype);
             Py_XDECREF(stype);
+            if (newtype == NULL) {
+                goto fail;
+            }
             stype = newtype;
             scalarkind = PyArray_ScalarKind(newtype->type_num, NULL);
             mps[i] = (PyArrayObject *)Py_None;
@@ -1835,7 +1858,7 @@ PyArray_ConvertToCommonType(PyObject *op, int *retn)
         }
         Py_XDECREF(otmp);
     }
-    if (intype==NULL) {
+    if (intype == NULL) {
         /* all scalars */
         allscalars = 1;
         intype = stype;
@@ -1867,7 +1890,7 @@ PyArray_ConvertToCommonType(PyObject *op, int *retn)
 
     /* Make sure all arrays are actual array objects. */
     for (i = 0; i < n; i++) {
-        int flags = NPY_ARRAY_CARRAY | NPY_ARRAY_ALLOWNA;
+        int flags = NPY_ARRAY_CARRAY;
 
         if ((otmp = PySequence_GetItem(op, i)) == NULL) {
             goto fail;

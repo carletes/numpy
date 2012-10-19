@@ -16,7 +16,8 @@ __all__ = ['assert_equal', 'assert_almost_equal','assert_approx_equal',
            'decorate_methods', 'jiffies', 'memusage', 'print_assert_equal',
            'raises', 'rand', 'rundocs', 'runstring', 'verbose', 'measure',
            'assert_', 'assert_array_almost_equal_nulp',
-           'assert_array_max_ulp', 'assert_warns', 'assert_allclose']
+           'assert_array_max_ulp', 'assert_warns', 'assert_no_warnings',
+           'assert_allclose']
 
 verbose = 0
 
@@ -567,7 +568,7 @@ def assert_approx_equal(actual,desired,significant=7,err_msg='',verbose=True):
 
 def assert_array_compare(comparison, x, y, err_msg='', verbose=True,
                          header=''):
-    from numpy.core import array, isnan, isinf, isna, any, all, inf
+    from numpy.core import array, isnan, isinf, any, all, inf
     x = array(x, copy=False, subok=True)
     y = array(y, copy=False, subok=True)
 
@@ -599,26 +600,8 @@ def assert_array_compare(comparison, x, y, err_msg='', verbose=True,
                 raise AssertionError(msg)
 
         if isnumber(x) and isnumber(y):
-            x_isna, y_isna = isna(x), isna(y)
             x_isnan, y_isnan = isnan(x), isnan(y)
             x_isinf, y_isinf = isinf(x), isinf(y)
-
-            # Remove any NAs from the isnan and isinf arrays
-            if x.ndim == 0:
-                if x_isna:
-                    x_isnan = False
-                    x_isinf = False
-            else:
-                x_isnan[x_isna] = False
-                x_isinf[x_isna] = False
-            if y.ndim == 0:
-                if y_isna:
-                    y_isnan = False
-                    y_isinf = False
-            else:
-                y_isnan[y_isna] = False
-                y_isinf[y_isna] = False
-
 
             # Validate that the special values are in the same place
             if any(x_isnan) or any(y_isnan):
@@ -627,15 +610,11 @@ def assert_array_compare(comparison, x, y, err_msg='', verbose=True,
                 # Check +inf and -inf separately, since they are different
                 chk_same_position(x == +inf, y == +inf, hasval='+inf')
                 chk_same_position(x == -inf, y == -inf, hasval='-inf')
-            if any(x_isna) or any(y_isna):
-                chk_same_position(x_isna, y_isna, hasval='NA')
 
             # Combine all the special values
             x_id, y_id = x_isnan, y_isnan
             x_id |= x_isinf
             y_id |= y_isinf
-            x_id |= x_isna
-            y_id |= y_isna
 
             # Only do the comparison if actual values are left
             if all(x_id):
@@ -645,17 +624,6 @@ def assert_array_compare(comparison, x, y, err_msg='', verbose=True,
                 val = comparison(x[~x_id], y[~y_id])
             else:
                 val = comparison(x, y)
-        # field-NA isn't supported yet, so skip struct dtypes for this
-        elif (not x.dtype.names and not y.dtype.names) and \
-                    (any(isna(x)) or any(isna(y))):
-            x_isna, y_isna = isna(x), isna(y)
-
-            if any(x_isna) or any(y_isna):
-                chk_same_position(x_isna, y_isna, hasval='NA')
-
-            if all(x_isna):
-                return
-            val = comparison(x[~x_isna], y[~y_isna])
         else:
             val = comparison(x,y)
 
@@ -692,9 +660,7 @@ def assert_array_equal(x, y, err_msg='', verbose=True):
     elements of these objects are equal. An exception is raised at
     shape mismatch or conflicting values. In contrast to the standard usage
     in numpy, NaNs are compared like numbers, no assertion is raised if
-    both objects have NaNs in the same positions. Similarly, NAs are compared
-    like numbers, no assertion is raised if both objects have NAs in the
-    same positions.
+    both objects have NaNs in the same positions.
 
     The usual caution for verifying equality with floating point numbers is
     advised.
@@ -1499,7 +1465,7 @@ def assert_warns(warning_class, func, *args, **kw):
 
     Returns
     -------
-    None
+    The value returned by `func`.
 
     """
 
@@ -1509,7 +1475,7 @@ def assert_warns(warning_class, func, *args, **kw):
     l = ctx.__enter__()
     warnings.simplefilter('always')
     try:
-        func(*args, **kw)
+        result = func(*args, **kw)
         if not len(l) > 0:
             raise AssertionError("No warning raised when calling %s"
                     % func.__name__)
@@ -1518,3 +1484,36 @@ def assert_warns(warning_class, func, *args, **kw):
                     "%s( is %s)" % (func.__name__, warning_class, l[0]))
     finally:
         ctx.__exit__()
+    return result
+
+def assert_no_warnings(func, *args, **kw):
+    """
+    Fail if the given callable produces any warnings.
+
+    Parameters
+    ----------
+    func : callable
+        The callable to test.
+    \\*args : Arguments
+        Arguments passed to `func`.
+    \\*\\*kwargs : Kwargs
+        Keyword arguments passed to `func`.
+    
+    Returns
+    -------
+    The value returned by `func`.
+
+    """
+    # XXX: once we may depend on python >= 2.6, this can be replaced by the
+    # warnings module context manager.
+    ctx = WarningManager(record=True)
+    l = ctx.__enter__()
+    warnings.simplefilter('always')
+    try:
+        result = func(*args, **kw)
+        if len(l) > 0:
+            raise AssertionError("Got warnings when calling %s: %s"
+                    % (func.__name__, l))
+    finally:
+        ctx.__exit__()
+    return result

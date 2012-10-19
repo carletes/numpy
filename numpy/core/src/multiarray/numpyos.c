@@ -4,15 +4,14 @@
 #include <locale.h>
 #include <stdio.h>
 
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #define _MULTIARRAYMODULE
-#define NPY_NO_PREFIX
 #include "numpy/arrayobject.h"
 #include "numpy/npy_math.h"
 
 #include "npy_config.h"
 
-#include "numpy/npy_3kcompat.h"
+#include "npy_pycompat.h"
 
 /*
  * From the C99 standard, section 7.19.6: The exponent always contains at least
@@ -432,8 +431,8 @@ NumPyOS_ascii_strtod_plain(const char *s, char** endptr)
 {
     double result;
 #if PY_VERSION_HEX >= 0x02070000
-    NPY_ALLOW_C_API_DEF
-    NPY_ALLOW_C_API
+    NPY_ALLOW_C_API_DEF;
+    NPY_ALLOW_C_API;
     result = PyOS_string_to_double(s, endptr, NULL);
     if (PyErr_Occurred()) {
         if (endptr) {
@@ -441,7 +440,7 @@ NumPyOS_ascii_strtod_plain(const char *s, char** endptr)
         }
         PyErr_Clear();
     }
-    NPY_DISABLE_C_API
+    NPY_DISABLE_C_API;
 #else
     result = PyOS_ascii_strtod(s, endptr);
 #endif

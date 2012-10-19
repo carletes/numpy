@@ -381,13 +381,9 @@ arraytypes_src = env.GenerateFromTemplate(
     pjoin('src', 'multiarray', 'arraytypes.c.src'))
 nditer_src = env.GenerateFromTemplate(
     pjoin('src', 'multiarray', 'nditer_templ.c.src'))
-boolean_ops_src = env.GenerateFromTemplate(
-    pjoin('src', 'multiarray', 'boolean_ops.c.src'))
 lowlevel_strided_loops_src = env.GenerateFromTemplate(
     pjoin('src', 'multiarray', 'lowlevel_strided_loops.c.src'))
 einsum_src = env.GenerateFromTemplate(pjoin('src', 'multiarray', 'einsum.c.src'))
-umathmodule_src = env.GenerateFromTemplate(pjoin('src', 'umath',
-    'umathmodule.c.src'))
 umath_tests_src = env.GenerateFromTemplate(pjoin('src', 'umath',
     'umath_tests.c.src'))
 multiarray_tests_src = env.GenerateFromTemplate(pjoin('src', 'multiarray',
@@ -433,7 +429,9 @@ env.Install('$distutils_installdir/lib/npy-pkg-config', mlib_ini)
 env.Install('$distutils_installdir/lib/npy-pkg-config', npymath_ini)
 
 # npysort core lib
-npysort_src = [env.GenerateFromTemplate(pjoin('src', 'npysort', 'sort.c.src'))]
+npysort_src = [env.GenerateFromTemplate(pjoin('src', 'npysort', 'quicksort.c.src')),
+               env.GenerateFromTemplate(pjoin('src', 'npysort', 'mergesort.c.src')),
+               env.GenerateFromTemplate(pjoin('src', 'npysort', 'heapsort.c.src'))]
 env.StaticExtLibrary("npysort", npysort_src)
 env.Prepend(LIBS=["npysort"])
 env.Prepend(LIBPATH=["."])
@@ -448,7 +446,6 @@ if ENABLE_SEPARATE_COMPILATION:
         pjoin('src', 'multiarray', 'array_assign.c'),
         pjoin('src', 'multiarray', 'array_assign_scalar.c'),
         pjoin('src', 'multiarray', 'array_assign_array.c'),
-        pjoin('src', 'multiarray', 'boolean_ops.c'),
         pjoin('src', 'multiarray', 'datetime.c'),
         pjoin('src', 'multiarray', 'datetime_strings.c'),
         pjoin('src', 'multiarray', 'datetime_busday.c'),
@@ -458,8 +455,6 @@ if ENABLE_SEPARATE_COMPILATION:
         pjoin('src', 'multiarray', 'descriptor.c'),
         pjoin('src', 'multiarray', 'iterators.c'),
         pjoin('src', 'multiarray', 'mapping.c'),
-        pjoin('src', 'multiarray', 'na_mask.c'),
-        pjoin('src', 'multiarray', 'na_object.c'),
         pjoin('src', 'multiarray', 'number.c'),
         pjoin('src', 'multiarray', 'getset.c'),
         pjoin('src', 'multiarray', 'sequence.c'),
@@ -471,7 +466,6 @@ if ENABLE_SEPARATE_COMPILATION:
         pjoin('src', 'multiarray', 'item_selection.c'),
         pjoin('src', 'multiarray', 'calculation.c'),
         pjoin('src', 'multiarray', 'common.c'),
-        pjoin('src', 'multiarray', 'reduction.c'),
         pjoin('src', 'multiarray', 'refcount.c'),
         pjoin('src', 'multiarray', 'conversion_utils.c'),
         pjoin('src', 'multiarray', 'usertypes.c'),
@@ -481,15 +475,13 @@ if ENABLE_SEPARATE_COMPILATION:
         pjoin('src', 'multiarray', 'nditer_api.c'),
         pjoin('src', 'multiarray', 'nditer_constr.c'),
         pjoin('src', 'multiarray', 'nditer_pywrap.c'),
-        pjoin('src', 'multiarray', 'dtype_transfer.c')]
+        pjoin('src', 'multiarray', 'dtype_transfer.c'),
+        pjoin("src", "multiarray", "ucsnarrow.c")]
     multiarray_src.extend(arraytypes_src)
     multiarray_src.extend(scalartypes_src)
     multiarray_src.extend(lowlevel_strided_loops_src)
-    multiarray_src.extend(boolean_ops_src)
     multiarray_src.extend(nditer_src)
     multiarray_src.extend(einsum_src)
-    if PYTHON_HAS_UNICODE_WIDE:
-        multiarray_src.extend([pjoin("src", "multiarray", "ucsnarrow.c")])
 else:
     multiarray_src = [pjoin('src', 'multiarray', 'multiarraymodule_onefile.c')]
 multiarray = env.DistutilsPythonExtension('multiarray', source = multiarray_src)
@@ -501,6 +493,7 @@ env.DistutilsPythonExtension('multiarray_tests', source=multiarray_tests_src)
 if ENABLE_SEPARATE_COMPILATION:
     umathmodule_src.extend([pjoin('src', 'umath', 'ufunc_object.c')])
     umathmodule_src.extend([pjoin('src', 'umath', 'ufunc_type_resolution.c')])
+    umathmodule_src.extend([pjoin('src', 'multiarray', 'reduction.c')]),
     umathmodule_src.extend(umath_loops_src)
 else:
     umathmodule_src = [pjoin('src', 'umath', 'umathmodule_onefile.c')]

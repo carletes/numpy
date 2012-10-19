@@ -840,6 +840,7 @@ def test_iter_array_cast():
     assert_equal(i.operands[0], a)
     assert_equal(i.operands[0].dtype, np.dtype('f8'))
     # The memory layout of the temporary should match a (a is (48,4,16))
+    # except negative strides get flipped to positive strides.
     assert_equal(i.operands[0].strides, (96,8,32))
     a = a[::-1,:,::-1]
     i = nditer(a, [], [['readonly','copy']],
@@ -847,7 +848,7 @@ def test_iter_array_cast():
             op_dtypes=[np.dtype('f8')])
     assert_equal(i.operands[0], a)
     assert_equal(i.operands[0].dtype, np.dtype('f8'))
-    assert_equal(i.operands[0].strides, (-96,8,-32))
+    assert_equal(i.operands[0].strides, (96,8,32))
 
     # Same-kind cast 'f8' -> 'f4' -> 'f8'
     a = np.arange(24, dtype='f8').reshape(2,3,4).T
@@ -864,17 +865,18 @@ def test_iter_array_cast():
     i = None
     assert_equal(a[2,1,1], -12.5)
 
-    # Unsafe cast 'f4' -> 'i4'
     a = np.arange(6, dtype='i4')[::-2]
     i = nditer(a, [],
             [['writeonly','updateifcopy']],
             casting='unsafe',
             op_dtypes=[np.dtype('f4')])
     assert_equal(i.operands[0].dtype, np.dtype('f4'))
-    assert_equal(i.operands[0].strides, (-4,))
-    i.operands[0][:] = 1
+    # Even though the stride was negative in 'a', it
+    # becomes positive in the temporary
+    assert_equal(i.operands[0].strides, (4,))
+    i.operands[0][:] = [1,2,3]
     i = None
-    assert_equal(a, [1,1,1])
+    assert_equal(a, [1,2,3])
 
 def test_iter_array_cast_errors():
     # Check that invalid casts are caught
@@ -2416,143 +2418,55 @@ def test_iter_writemasked():
     # were copied back
     assert_equal(a, [3,3,2.5])
 
-def test_iter_maskna():
-    a_orig = np.zeros((3,), dtype='f8')
-    b_orig = np.zeros((3,), dtype='f4')
-    a = a_orig.view(maskna=True)
-    b = b_orig.view(maskna=True)
+def test_iter_non_writable_attribute_deletion():
+    it = np.nditer(np.ones(2))
+    attr = ["value", "shape", "operands", "itviews", "has_delayed_bufalloc",
+            "iterationneedsapi", "has_multi_index", "has_index", "dtypes",
+            "ndim", "nop", "itersize", "finished"]
 
-    # Default iteration with NA mask
-    a[...] = np.NA
-    it = np.nditer(a)
-    for x in it:
-        assert_equal(np.isna(x), True)
+    if sys.version[:3] == '2.4':
+        error = TypeError
+    else:
+        error = AttributeError
 
-    # readonly USE_MASKNA iteration of an array without an NA mask
-    # creates a virtual mask
-    it = np.nditer([a_orig,b_orig], [], [['readonly','use_maskna']]*2)
-    for x, y in it:
-        assert_(x.flags.maskna)
-        assert_(not x.flags.ownmaskna)
-        assert_(y.flags.maskna)
-        assert_(not y.flags.ownmaskna)
-        assert_equal(np.isna(x), False)
-        assert_equal(np.isna(y), False)
+    for s in attr:
+        assert_raises(error, delattr, it, s)
 
-    # buffered readonly USE_MASKNA iteration of an array without an NA mask
-    # creates a virtual mask
-    it = np.nditer([a_orig,b_orig], ['buffered'], [['readonly','use_maskna']]*2,
-                        op_dtypes=['i4','i8'], casting='unsafe')
-    for x, y in it:
-        assert_(x.flags.maskna)
-        assert_(not x.flags.ownmaskna)
-        assert_(y.flags.maskna)
-        assert_(not y.flags.ownmaskna)
-        assert_equal(np.isna(x), False)
-        assert_equal(np.isna(y), False)
 
-    # writeable USE_MASKNA iteration of an array without an NA mask
-    # is disallowed
-    assert_raises(ValueError, np.nditer, a_orig, [],
-                                [['readwrite','use_maskna']])
-    assert_raises(ValueError, np.nditer, a_orig, [],
-                                [['writeonly','use_maskna']])
-    assert_raises(ValueError, np.nditer, a_orig, ['buffered'],
-                                [['readwrite','use_maskna']])
-    assert_raises(ValueError, np.nditer, a_orig, ['buffered'],
-                                [['writeonly','use_maskna']])
+def test_iter_writable_attribute_deletion():
+    it = np.nditer(np.ones(2))
+    attr = [ "multi_index", "index", "iterrange", "iterindex"]
+    for s in attr:
+        assert_raises(AttributeError, delattr, it, s)
 
-    # Assigning NAs and values in an iteration
-    a[...] = [0,1,2]
-    b_orig[...] = [1,2,2]
-    it = np.nditer([a,b_orig], [], [['writeonly','use_maskna'], ['readonly']])
-    for x, y in it:
-        if y == 2:
-            x[...] = np.NA
-        else:
-            x[...] = 5
-    assert_equal(a[0], 5)
-    assert_equal(np.isna(a), [0,1,1])
 
-    # Copying NA values in an iteration
-    b.flags.maskna = True
-    a[...] = [np.NA, np.NA, 1]
-    b[...] = [np.NA, 0, np.NA]
-    it = np.nditer([a,b], [], [['writeonly','use_maskna'],
-                               ['readonly','use_maskna']])
-    for x, y in it:
-        x[...] = y
-    assert_equal(a[1], 0)
-    assert_equal(np.isna(a), [1,0,1])
+def test_iter_element_deletion():
+    it = np.nditer(np.ones(3))
+    try:
+        del it[1]
+        del it[1:2]
+    except TypeError:
+        pass
+    except:
+        raise AssertionError
 
-    # Copying NA values with buffering
-    a_orig[...] = [1.5,2.5,3.5]
-    b_orig[...] = [4.5,5.5,6.5]
-    a[...] = [np.NA, np.NA, 5.5]
-    b[...] = [np.NA, 3.5, np.NA]
-    it = np.nditer([a,b], ['buffered'], [['writeonly','use_maskna'],
-                               ['readonly','use_maskna']],
-                    op_dtypes=['i4','i4'],
-                    casting='unsafe')
-    for x, y in it:
-        x[...] = y
-    # The 3.5 in b gets truncated to 3, because the iterator is processing
-    # elements as int32 values.
-    assert_equal(a[1], 3)
-    assert_equal(np.isna(a), [1,0,1])
-    assert_equal(a_orig, [1.5,3,5.5])
+def test_iter_allocated_array_dtypes():
+    # If the dtype of an allocated output has a shape, the shape gets
+    # tacked onto the end of the result.
+    it = np.nditer(([1, 3, 20], None), op_dtypes=[None, ('i4', (2,))])
+    for a, b in it:
+        b[0] = a - 1
+        b[1] = a + 1
+    assert_equal(it.operands[1], [[0,2], [2,4], [19,21]])
 
-    # Copying NA values with buffering and external_loop
-    a_orig[...] = [1.5,2.5,3.5]
-    b_orig[...] = [4.5,5.5,6.5]
-    a[...] = [np.NA, np.NA, 5.5]
-    b[...] = [np.NA, 3.5, np.NA]
-    it = np.nditer([a,b], ['buffered','external_loop'],
-                              [['writeonly','use_maskna'],
-                               ['readonly','use_maskna']],
-                    op_dtypes=['i4','i4'],
-                    casting='unsafe')
-    for x, y in it:
-        assert_equal(x.size, 3)
-        x[...] = y
-    # The 3.5 in b gets truncated to 3, because the iterator is processing
-    # elements as int32 values.
-    assert_equal(a[1], 3)
-    assert_equal(np.isna(a), [1,0,1])
-    assert_equal(a_orig, [1.5,3,5.5])
-
-    # WRITEMASKED and MASKNA aren't supported together yet
-    mask = np.array([1,1,0], dtype='?')
-    assert_raises(ValueError, np.nditer, [a,b,mask], [],
-                                [['writeonly','use_maskna','writemasked'],
-                                 ['readonly','use_maskna'],
-                                 ['readonly','arraymask']])
-    # when they are supported together, will probably require buffering
-    assert_raises(ValueError, np.nditer, [a,b,mask], ['buffered'],
-                                [['writeonly','use_maskna','writemasked'],
-                                 ['readonly','use_maskna'],
-                                 ['readonly','arraymask']])
-
-def test_iter_maskna_default_use_maskna():
-    # The Python exposure of nditer adds the USE_MASKNA flag automatically
-    a = np.array([3, 5, np.NA, 2, 1])
-    b = np.array([1, 1.0, 4.5, 2, 0])
-
-    # The output should automatically get an NA mask
-    it = np.nditer([a,b,None])
-    for x,y,z in it:
-        z[...] = x+y
-    assert_(it.operands[2].flags.maskna)
-    assert_array_equal(it.operands[2], a+b)
-
-    # This holds even when we specify the op_flags
-    it = np.nditer([a,b.copy(),None], op_flags=[['readonly'],
-                                    ['readwrite'], ['writeonly', 'allocate']])
-    for x,y,z in it:
-        y[...] = y[...] + 1
-        z[...] = x+y
-    assert_(it.operands[2].flags.maskna)
-    assert_array_equal(it.operands[2], a+b+1)
+    # Make sure this works for scalars too
+    it = np.nditer((10, 2, None), op_dtypes=[None, None, ('i4', (2,2))])
+    for a, b, c in it:
+        c[0,0] = a - b
+        c[0,1] = a + b
+        c[1,0] = a * b
+        c[1,1] = a / b
+    assert_equal(it.operands[2], [[8, 12], [20, 5]])
 
 if __name__ == "__main__":
     run_module_suite()

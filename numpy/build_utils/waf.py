@@ -123,9 +123,9 @@ int main()
 def check_type(self, type_name, **kw):
     code = r"""
 int main() {
-	if ((%(type_name)s *) 0)
+    if ((%(type_name)s *) 0)
         return 0;
-	if (sizeof (%(type_name)s))
+    if (sizeof (%(type_name)s))
         return 0;
 }
 """ % {"type_name": type_name}
@@ -412,15 +412,15 @@ def check_ldouble_representation(conf, **kw):
 def post_check(self, *k, **kw):
     "set the variables after a test was run successfully"
 
-    is_success = 0
+    is_success = False
     if kw['execute']:
         if kw['success'] is not None:
-            is_success = kw['success']
+            if kw.get('define_ret', False):
+                is_success = kw['success']
+            else:
+                is_success = (kw['success'] == 0)
     else:
-        if kw["success"] == 0:
-            is_success = 1
-        else:
-            is_success = 0
+        is_success = (kw['success'] == 0)
 
     def define_or_stuff():
         nm = kw['define_name']
@@ -453,7 +453,7 @@ def post_check(self, *k, **kw):
                 if isinstance(val, str):
                     val = val.rstrip(os.path.sep)
                 self.env.append_unique(k + '_' + kw['uselib_store'], val)
-	return is_success
+    return is_success
 
 @waflib.Configure.conf
 def define_with_comment(conf, define, value, comment=None, quote=True):
@@ -497,7 +497,7 @@ def define_cond(self, name, value, comment):
         self.undefine(name)
 
 @waflib.Configure.conf
-def get_config_header(self, defines=True, headers=False):
+def get_config_header(self, defines=True, headers=False, define_prefix=None):
     """
     Create the contents of a ``config.h`` file from the defines and includes
     set in conf.env.define_key / conf.env.include_key. No include guards are added.

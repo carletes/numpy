@@ -1,16 +1,20 @@
-from StringIO import StringIO
 import pickle
 import sys
 import platform
 import gc
 import copy
-from os import path
-from numpy.testing import *
-from numpy.testing.utils import _assert_valid_refcount, WarningManager
-from numpy.compat import asbytes, asunicode, asbytes_nested
 import warnings
 import tempfile
+from StringIO import StringIO
+from os import path
 import numpy as np
+from numpy.testing import (
+        run_module_suite, TestCase, assert_, assert_equal,
+        assert_almost_equal, assert_array_equal, assert_array_almost_equal,
+        assert_raises, assert_warns, dec
+        )
+from numpy.testing.utils import _assert_valid_refcount, WarningManager
+from numpy.compat import asbytes, asunicode, asbytes_nested
 
 if sys.version_info[0] >= 3:
     import io
@@ -164,6 +168,34 @@ class TestRegression(TestCase):
         assert_array_almost_equal(xb,yb.nonzero())
         assert_(np.all(a[ya] > 0.5))
         assert_(np.all(b[yb] > 0.5))
+
+    def test_endian_where(self,level=rlevel):
+        """GitHuB issue #369"""
+        net = np.zeros(3, dtype='>f4')
+        net[1] = 0.00458849
+        net[2] = 0.605202
+        max_net = net.max()
+        test = np.where(net <= 0., max_net, net)
+        correct = np.array([ 0.60520202,  0.00458849,  0.60520202])
+        assert_array_almost_equal(test, correct)
+
+    def test_endian_recarray(self,level=rlevel):
+        """Ticket #2185"""
+        dt = np.dtype([
+               ('head', '>u4'),
+               ('data', '>u4', 2),
+            ])
+        buf = np.recarray(1, dtype=dt)
+        buf[0]['head'] = 1
+        buf[0]['data'][:] = [1,1]
+
+        h = buf[0]['head']
+        d = buf[0]['data'][0]
+        buf[0]['head'] = h
+        buf[0]['data'][0] = d
+        print buf[0]['head']
+        assert_(buf[0]['head'] == 1)
+
 
     def test_mem_dot(self,level=rlevel):
         """Ticket #106"""
@@ -426,6 +458,13 @@ class TestRegression(TestCase):
         assert_equal(np.array(x,dtype=np.float32,ndmin=2).ndim,2)
         assert_equal(np.array(x,dtype=np.float64,ndmin=2).ndim,2)
 
+    def test_ndmin_order(self, level=rlevel):
+        """Issue #465 and related checks"""
+        assert_(np.array([1,2], order='C', ndmin=3).flags.c_contiguous)
+        assert_(np.array([1,2], order='F', ndmin=3).flags.f_contiguous)
+        assert_(np.array(np.ones((2,2), order='F'), ndmin=3).flags.f_contiguous)
+        assert_(np.array(np.ones((2,2), order='C'), ndmin=3).flags.c_contiguous)
+
     def test_mem_axis_minimization(self, level=rlevel):
         """Ticket #327"""
         data = np.arange(5)
@@ -465,6 +504,12 @@ class TestRegression(TestCase):
         a = np.array([[1,2],[3,4],[5,6],[7,8]])
         b = a[:,1]
         assert_equal(b.reshape(2,2,order='F'), [[2,6],[4,8]])
+
+    def test_reshape_zero_strides(self, level=rlevel):
+        """Issue #380, test reshaping of zero strided arrays"""
+        a = np.ones(1)
+        a = np.lib.stride_tricks.as_strided(a, shape=(5,), strides=(0,))
+        assert_(a.reshape(5,1).strides[0] == 0)
 
     def test_repeat_discont(self, level=rlevel):
         """Ticket #352"""
@@ -882,9 +927,13 @@ class TestRegression(TestCase):
         data_dir = path.join(path.dirname(__file__), 'data')
         filename = path.join(data_dir, "astype_copy.pkl")
         if sys.version_info[0] >= 3:
-            xp = pickle.load(open(filename, 'rb'), encoding='latin1')
+            f = open(filename, 'rb')
+            xp = pickle.load(f, encoding='latin1')
+            f.close()
         else:
-            xp = pickle.load(open(filename))
+            f = open(filename)
+            xp = pickle.load(f)
+            f.close()
         xpd = xp.astype(np.float64)
         assert_((xp.__array_interface__['data'][0] !=
                 xpd.__array_interface__['data'][0]))
@@ -1003,10 +1052,14 @@ class TestRegression(TestCase):
 
     def test_sign_for_complex_nan(self, level=rlevel):
         """Ticket 794."""
-        C = np.array([-np.inf, -2+1j, 0, 2-1j, np.inf, np.nan])
-        have = np.sign(C)
-        want = np.array([-1+0j, -1+0j, 0+0j, 1+0j, 1+0j, np.nan])
-        assert_equal(have, want)
+        olderr = np.seterr(invalid='ignore')
+        try:
+            C = np.array([-np.inf, -2+1j, 0, 2-1j, np.inf, np.nan])
+            have = np.sign(C)
+            want = np.array([-1+0j, -1+0j, 0+0j, 1+0j, 1+0j, np.nan])
+            assert_equal(have, want)
+        finally:
+            np.seterr(**olderr)
 
     def test_for_equal_names(self, level=rlevel):
         """Ticket #674"""
@@ -1406,16 +1459,26 @@ class TestRegression(TestCase):
         for tp in [np.csingle, np.cdouble, np.clongdouble]:
             x = tp(1+2j)
             assert_warns(np.ComplexWarning, float, x)
-            ctx = WarningManager()
-            ctx.__enter__()
-            warnings.simplefilter('ignore')
-            assert_equal(float(x), float(x.real))
-            ctx.__exit__()
+            warn_ctx = WarningManager()
+            warn_ctx.__enter__()
+            try:
+                warnings.simplefilter('ignore')
+                assert_equal(float(x), float(x.real))
+            finally:
+                warn_ctx.__exit__()
 
     def test_complex_scalar_complex_cast(self):
         for tp in [np.csingle, np.cdouble, np.clongdouble]:
             x = tp(1+2j)
             assert_equal(complex(x), 1+2j)
+
+    def test_complex_boolean_cast(self):
+        """Ticket #2218"""
+        for tp in [np.csingle, np.cdouble, np.clongdouble]:
+            x = np.array([0, 0+0.5j, 0.5+0j], dtype=tp)
+            assert_equal(x.astype(bool), np.array([0, 1, 1], dtype=bool))
+            assert_(np.any(x))
+            assert_(np.all(x[1:]))
 
     def test_uint_int_conversion(self):
         x = 2**64 - 1
@@ -1485,6 +1548,22 @@ class TestRegression(TestCase):
         assert_(np.array(1.0).flags.f_contiguous)
         assert_(np.array(np.float32(1.0)).flags.c_contiguous)
         assert_(np.array(np.float32(1.0)).flags.f_contiguous)
+
+    def test_squeeze_contiguous(self):
+        """Similar to GitHub issue #387"""
+        a = np.zeros((1,2)).squeeze()
+        b = np.zeros((2,2,2), order='F')[:,:,::2].squeeze()
+        assert_(a.flags.c_contiguous)
+        assert_(a.flags.f_contiguous)
+        assert_(b.flags.f_contiguous)
+
+    def test_reduce_contiguous(self):
+        """GitHub issue #387"""
+        a = np.add.reduce(np.zeros((2,1,2)), (0,1))
+        b = np.add.reduce(np.zeros((2,1,2)), 1)
+        assert_(a.flags.c_contiguous)
+        assert_(a.flags.f_contiguous)
+        assert_(b.flags.c_contiguous)
 
     def test_object_array_self_reference(self):
         # Object arrays with references to themselves can cause problems
@@ -1587,6 +1666,14 @@ class TestRegression(TestCase):
         s = re.sub("a(.)", "\x01\\1", "a_")
         assert_equal(s[0], "\x01")
 
+    def test_pickle_bytes_overwrite(self):
+        if sys.version_info[0] >= 3:
+            data = np.array([1], dtype='b')
+            data = pickle.loads(pickle.dumps(data))
+            data[0] = 0xdd
+            bytestring = "\x01  ".encode('ascii')
+            assert_equal(bytestring[0:1], '\x01'.encode('ascii'))
+
     def test_structured_type_to_object(self):
         a_rec = np.array([(0,1), (3,2)], dtype='i4,i8')
         a_obj = np.empty((2,), dtype=object)
@@ -1631,6 +1718,71 @@ class TestRegression(TestCase):
         acnt = sys.getrefcount(a)
         res = np.add.reduce(a)
         assert_equal(sys.getrefcount(a), acnt)
+
+    def test_search_sorted_invalid_arguments(self):
+        # Ticket #2021, should not segfault.
+        x = np.arange(0, 4, dtype='datetime64[D]')
+        assert_raises(TypeError, x.searchsorted, 1)
+
+    def test_string_truncation(self):
+        # Ticket #1990 - Data can be truncated in creation of an array from a
+        # mixed sequence of numeric values and strings
+        for val in [True, 1234, 123.4, complex(1, 234)]:
+            for tostr in [asunicode, asbytes]:
+                b = np.array([val, tostr('xx')])
+                assert_equal(tostr(b[0]), tostr(val))
+                b = np.array([tostr('xx'), val])
+                assert_equal(tostr(b[1]), tostr(val))
+
+                # test also with longer strings
+                b = np.array([val, tostr('xxxxxxxxxx')])
+                assert_equal(tostr(b[0]), tostr(val))
+                b = np.array([tostr('xxxxxxxxxx'), val])
+                assert_equal(tostr(b[1]), tostr(val))
+
+    def test_string_truncation_ucs2(self):
+        # Ticket #2081. Python compiled with two byte unicode
+        # can lead to truncation if itemsize is not properly
+        # adjusted for Numpy's four byte unicode.
+        if sys.version_info[0] >= 3:
+            a = np.array(['abcd'])
+        else:
+            a = np.array([u'abcd'])
+        assert_equal(a.dtype.itemsize, 16)
+
+    def test_unique_stable(self):
+        # Ticket #2063 must always choose stable sort for argsort to
+        # get consistent results
+        v = np.array(([0]*5 + [1]*6 + [2]*6)*4)
+        res = np.unique(v, return_index=True)
+        tgt = (np.array([0, 1, 2]), np.array([ 0,  5, 11]))
+        assert_equal(res, tgt)
+
+    def test_unicode_alloc_dealloc_match(self):
+        # Ticket #1578, the mismatch only showed up when running
+        # python-debug for python versions >= 2.7, and then as
+        # a core dump and error message.
+        a = np.array(['abc'], dtype=np.unicode)[0]
+        del a
+
+    def test_refcount_error_in_clip(self):
+        # Ticket #1588
+        a = np.zeros((2,), dtype='>i2').clip(min=0)
+        x = a + a
+        # This used to segfault:
+        y = str(x)
+        # Check the final string:
+        assert_(y == "[0 0]")
+
+    def test_searchsorted_wrong_dtype(self):
+        # Ticket #2189, it used to segfault, so we check that it raises the
+        # proper exception.
+        a = np.array([('a', 1)], dtype='S1, int')
+        assert_raises(TypeError, np.searchsorted, a, 1.2)
+        # Ticket #2066, similar problem:
+        dtype = np.format_parser(['i4', 'i4'], [], [])
+        a = np.recarray((2, ), dtype)
+        assert_raises(TypeError, np.searchsorted, a, 1)
 
 if __name__ == "__main__":
     run_module_suite()

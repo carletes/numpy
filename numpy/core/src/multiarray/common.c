@@ -1,45 +1,72 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #define _MULTIARRAYMODULE
-#define NPY_NO_PREFIX
 #include "numpy/arrayobject.h"
 
 #include "npy_config.h"
-#include "numpy/npy_3kcompat.h"
+#include "npy_pycompat.h"
 
 #include "usertypes.h"
 
 #include "common.h"
 #include "buffer.h"
 
+/*
+ * The casting to use for implicit assignment operations resulting from
+ * in-place operations (like +=) and out= arguments. (Notice that this
+ * variable is misnamed, but it's part of the public API so I'm not sure we
+ * can just change it. Maybe someone should try and see if anyone notices.
+ */
+/*
+ * In numpy 1.6 and earlier, this was NPY_UNSAFE_CASTING. In a future
+ * release, it will become NPY_SAME_KIND_CASTING.  Right now, during the
+ * transitional period, we continue to follow the NPY_UNSAFE_CASTING rules (to
+ * avoid breaking people's code), but we also check for whether the cast would
+ * be allowed under the NPY_SAME_KIND_CASTING rules, and if not we issue a
+ * warning (that people's code will be broken in a future release.)
+ */
+NPY_NO_EXPORT NPY_CASTING NPY_DEFAULT_ASSIGN_CASTING = NPY_INTERNAL_UNSAFE_CASTING_BUT_WARN_UNLESS_SAME_KIND;
+
 
 NPY_NO_EXPORT PyArray_Descr *
 _array_find_python_scalar_type(PyObject *op)
 {
     if (PyFloat_Check(op)) {
-        return PyArray_DescrFromType(PyArray_DOUBLE);
+        return PyArray_DescrFromType(NPY_DOUBLE);
     }
     else if (PyComplex_Check(op)) {
-        return PyArray_DescrFromType(PyArray_CDOUBLE);
+        return PyArray_DescrFromType(NPY_CDOUBLE);
     }
     else if (PyInt_Check(op)) {
         /* bools are a subclass of int */
         if (PyBool_Check(op)) {
-            return PyArray_DescrFromType(PyArray_BOOL);
+            return PyArray_DescrFromType(NPY_BOOL);
         }
         else {
-            return  PyArray_DescrFromType(PyArray_LONG);
+            return  PyArray_DescrFromType(NPY_LONG);
         }
     }
     else if (PyLong_Check(op)) {
-        /* if integer can fit into a longlong then return that*/
+        /* check to see if integer can fit into a longlong or ulonglong 
+           and return that --- otherwise return object */
         if ((PyLong_AsLongLong(op) == -1) && PyErr_Occurred()) {
             PyErr_Clear();
-            return PyArray_DescrFromType(PyArray_OBJECT);
         }
-        return PyArray_DescrFromType(PyArray_LONGLONG);
+        else {
+            return PyArray_DescrFromType(NPY_LONGLONG);
+        }
+
+        if ((PyLong_AsUnsignedLongLong(op) == (unsigned long long) -1) 
+            && PyErr_Occurred()){
+            PyErr_Clear();
+        } 
+        else {
+            return PyArray_DescrFromType(NPY_ULONGLONG);
+        } 
+        
+        return PyArray_DescrFromType(NPY_OBJECT);
     }
     return NULL;
 }
@@ -69,18 +96,21 @@ _use_default_type(PyObject *op)
 #endif
 
 /*
+ * These constants are used to signal that the recursive dtype determination in
+ * PyArray_DTypeFromObject encountered a string type, and that the recursive
+ * search must be restarted so that string representation lengths can be
+ * computed for all scalar types.
+ */
+#define RETRY_WITH_STRING 1
+#define RETRY_WITH_UNICODE 2
+
+/*
  * Recursively examines the object to determine an appropriate dtype
  * to use for converting to an ndarray.
  *
  * 'obj' is the object to be converted to an ndarray.
  *
  * 'maxdims' is the maximum recursion depth.
- *
- * 'out_contains_na' gets set to 1 if an np.NA object is encountered.
- * The NA does not affect the dtype produced, so if this is set to 1
- * and the result is for an array without NA support, the dtype should
- * be switched to NPY_OBJECT. When adding multi-NA support, this should
- * also signal whether just regular NAs or NAs with payloads were seen.
  *
  * 'out_dtype' should be either NULL or a minimal starting dtype when
  * the function is called. It is updated with the results of type
@@ -89,9 +119,30 @@ _use_default_type(PyObject *op)
  *
  * Returns 0 on success, -1 on failure.
  */
+ NPY_NO_EXPORT int
+PyArray_DTypeFromObject(PyObject *obj, int maxdims, PyArray_Descr **out_dtype)
+{
+    int res;
+
+    res = PyArray_DTypeFromObjectHelper(obj, maxdims, out_dtype, 0);
+    if (res == RETRY_WITH_STRING) {
+        res = PyArray_DTypeFromObjectHelper(obj, maxdims,
+                                            out_dtype, NPY_STRING);
+        if (res == RETRY_WITH_UNICODE) {
+            res = PyArray_DTypeFromObjectHelper(obj, maxdims,
+                                                out_dtype, NPY_UNICODE);
+        }
+    }
+    else if (res == RETRY_WITH_UNICODE) {
+        res = PyArray_DTypeFromObjectHelper(obj, maxdims,
+                                            out_dtype, NPY_UNICODE);
+    }
+    return res;
+}
+
 NPY_NO_EXPORT int
-PyArray_DTypeFromObject(PyObject *obj, int maxdims, int *out_contains_na,
-                        PyArray_Descr **out_dtype)
+PyArray_DTypeFromObjectHelper(PyObject *obj, int maxdims,
+                              PyArray_Descr **out_dtype, int string_type)
 {
     int i, size;
     PyArray_Descr *dtype = NULL;
@@ -102,14 +153,6 @@ PyArray_DTypeFromObject(PyObject *obj, int maxdims, int *out_contains_na,
 
     /* Check if it's an ndarray */
     if (PyArray_Check(obj)) {
-        /* Check for any NAs in the array */
-        int containsna = PyArray_ContainsNA((PyArrayObject *)obj, NULL, NULL);
-        if (containsna == -1) {
-            goto fail;
-        }
-        else if (containsna) {
-            *out_contains_na = 1;
-        }
         dtype = PyArray_DESCR((PyArrayObject *)obj);
         Py_INCREF(dtype);
         goto promote_types;
@@ -117,9 +160,49 @@ PyArray_DTypeFromObject(PyObject *obj, int maxdims, int *out_contains_na,
 
     /* Check if it's a NumPy scalar */
     if (PyArray_IsScalar(obj, Generic)) {
-        dtype = PyArray_DescrFromScalar(obj);
-        if (dtype == NULL) {
-            goto fail;
+        if (!string_type) {
+            dtype = PyArray_DescrFromScalar(obj);
+            if (dtype == NULL) {
+                goto fail;
+            }
+        }
+        else {
+            int itemsize;
+            PyObject *temp;
+
+            if (string_type == NPY_STRING) {
+                if ((temp = PyObject_Str(obj)) == NULL) {
+                    return -1;
+                }
+                itemsize = PyString_GET_SIZE(temp);
+            }
+            else if (string_type == NPY_UNICODE) {
+#if defined(NPY_PY3K)
+                if ((temp = PyObject_Str(obj)) == NULL) {
+#else
+                if ((temp = PyObject_Unicode(obj)) == NULL) {
+#endif
+                    return -1;
+                }
+                itemsize = PyUnicode_GET_DATA_SIZE(temp);
+#ifndef Py_UNICODE_WIDE
+                itemsize <<= 1;
+#endif
+            }
+            else {
+                goto fail;
+            }
+            Py_DECREF(temp);
+            if (*out_dtype != NULL &&
+                    (*out_dtype)->type_num == string_type &&
+                    (*out_dtype)->elsize >= itemsize) {
+                return 0;
+            }
+            dtype = PyArray_DescrNewFromType(string_type);
+            if (dtype == NULL) {
+                goto fail;
+            }
+            dtype->elsize = itemsize;
         }
         goto promote_types;
     }
@@ -127,13 +210,45 @@ PyArray_DTypeFromObject(PyObject *obj, int maxdims, int *out_contains_na,
     /* Check if it's a Python scalar */
     dtype = _array_find_python_scalar_type(obj);
     if (dtype != NULL) {
-        goto promote_types;
-    }
+        if (string_type) {
+            int itemsize;
+            PyObject *temp;
 
-    /* Check if it's an NA */
-    if (NpyNA_Check(obj)) {
-        *out_contains_na = 1;
-        return 0;
+            if (string_type == NPY_STRING) {
+                if ((temp = PyObject_Str(obj)) == NULL) {
+                    return -1;
+                }
+                itemsize = PyString_GET_SIZE(temp);
+            }
+            else if (string_type == NPY_UNICODE) {
+#if defined(NPY_PY3K)
+                if ((temp = PyObject_Str(obj)) == NULL) {
+#else
+                if ((temp = PyObject_Unicode(obj)) == NULL) {
+#endif
+                    return -1;
+                }
+                itemsize = PyUnicode_GET_DATA_SIZE(temp);
+#ifndef Py_UNICODE_WIDE
+                itemsize <<= 1;
+#endif
+            }
+            else {
+                goto fail;
+            }
+            Py_DECREF(temp);
+            if (*out_dtype != NULL &&
+                    (*out_dtype)->type_num == string_type &&
+                    (*out_dtype)->elsize >= itemsize) {
+                return 0;
+            }
+            dtype = PyArray_DescrNewFromType(string_type);
+            if (dtype == NULL) {
+                goto fail;
+            }
+            dtype->elsize = itemsize;
+        }
+        goto promote_types;
     }
 
     /* Check if it's an ASCII string */
@@ -210,9 +325,24 @@ PyArray_DTypeFromObject(PyObject *obj, int maxdims, int *out_contains_na,
     if (ip != NULL) {
         if (PyDict_Check(ip)) {
             PyObject *typestr;
+#if defined(NPY_PY3K)
+            PyObject *tmp = NULL;
+#endif
             typestr = PyDict_GetItemString(ip, "typestr");
-            if (typestr && PyString_Check(typestr)) {
-                dtype =_array_typedescr_fromstr(PyString_AS_STRING(typestr));
+#if defined(NPY_PY3K)
+            /* Allow unicode type strings */
+            if (PyUnicode_Check(typestr)) {
+                tmp = PyUnicode_AsASCIIString(typestr);
+                typestr = tmp;
+            }
+#endif
+            if (typestr && PyBytes_Check(typestr)) {
+                dtype =_array_typedescr_fromstr(PyBytes_AS_STRING(typestr));
+#if defined(NPY_PY3K)
+                if (tmp == typestr) {
+                    Py_DECREF(tmp);
+                }
+#endif
                 Py_DECREF(ip);
                 if (dtype == NULL) {
                     goto fail;
@@ -314,14 +444,20 @@ PyArray_DTypeFromObject(PyObject *obj, int maxdims, int *out_contains_na,
     }
     /* Recursive call for each sequence item */
     for (i = 0; i < size; ++i) {
+        int res;
         ip = PySequence_GetItem(obj, i);
-        if (ip==NULL) {
+        if (ip == NULL) {
             goto fail;
         }
-        if (PyArray_DTypeFromObject(ip, maxdims - 1,
-                            out_contains_na, out_dtype) < 0) {
+        res = PyArray_DTypeFromObjectHelper(ip, maxdims - 1,
+                                            out_dtype, string_type);
+        if (res < 0) {
             Py_DECREF(ip);
             goto fail;
+        }
+        else if (res > 0) {
+            Py_DECREF(ip);
+            return res;
         }
         Py_DECREF(ip);
     }
@@ -332,6 +468,12 @@ PyArray_DTypeFromObject(PyObject *obj, int maxdims, int *out_contains_na,
 promote_types:
     /* Set 'out_dtype' if it's NULL */
     if (*out_dtype == NULL) {
+        if (!string_type && dtype->type_num == NPY_STRING) {
+            return RETRY_WITH_STRING;
+        }
+        if (!string_type && dtype->type_num == NPY_UNICODE) {
+            return RETRY_WITH_UNICODE;
+        }
         *out_dtype = dtype;
         return 0;
     }
@@ -343,6 +485,16 @@ promote_types:
             return -1;
         }
         Py_DECREF(*out_dtype);
+        if (!string_type &&
+                res_dtype->type_num == NPY_UNICODE &&
+                (*out_dtype)->type_num != NPY_UNICODE) {
+            return RETRY_WITH_UNICODE;
+        }
+        if (!string_type &&
+                res_dtype->type_num == NPY_STRING &&
+                (*out_dtype)->type_num != NPY_STRING) {
+            return RETRY_WITH_STRING;
+        }
         *out_dtype = res_dtype;
         return 0;
     }
@@ -353,177 +505,69 @@ fail:
     return -1;
 }
 
+#undef RETRY_WITH_STRING
+#undef RETRY_WITH_UNICODE
+
 /* new reference */
 NPY_NO_EXPORT PyArray_Descr *
-_array_typedescr_fromstr(char *str)
+_array_typedescr_fromstr(char *c_str)
 {
-    PyArray_Descr *descr;
-    int type_num;
-    char typechar;
-    int size;
-    char msg[] = "unsupported typestring";
-    int swap;
-    char swapchar;
+    PyArray_Descr *descr = NULL;
+    PyObject *stringobj = PyString_FromString(c_str);
 
-    swapchar = str[0];
-    str += 1;
-
-    typechar = str[0];
-    size = atoi(str + 1);
-    switch (typechar) {
-    case 'b':
-        if (size == sizeof(Bool)) {
-            type_num = NPY_BOOL;
-        }
-        else {
-            PyErr_SetString(PyExc_ValueError, msg);
-            return NULL;
-        }
-        break;
-    case 'u':
-        if (size == sizeof(uintp)) {
-            type_num = NPY_UINTP;
-        }
-        else if (size == sizeof(char)) {
-            type_num = NPY_UBYTE;
-        }
-        else if (size == sizeof(short)) {
-            type_num = NPY_USHORT;
-        }
-        else if (size == sizeof(ulong)) {
-            type_num = NPY_ULONG;
-        }
-        else if (size == sizeof(int)) {
-            type_num = NPY_UINT;
-        }
-        else if (size == sizeof(ulonglong)) {
-            type_num = NPY_ULONGLONG;
-        }
-        else {
-            PyErr_SetString(PyExc_ValueError, msg);
-            return NULL;
-        }
-        break;
-    case 'i':
-        if (size == sizeof(intp)) {
-            type_num = NPY_INTP;
-        }
-        else if (size == sizeof(char)) {
-            type_num = NPY_BYTE;
-        }
-        else if (size == sizeof(short)) {
-            type_num = NPY_SHORT;
-        }
-        else if (size == sizeof(long)) {
-            type_num = NPY_LONG;
-        }
-        else if (size == sizeof(int)) {
-            type_num = NPY_INT;
-        }
-        else if (size == sizeof(longlong)) {
-            type_num = NPY_LONGLONG;
-        }
-        else {
-            PyErr_SetString(PyExc_ValueError, msg);
-            return NULL;
-        }
-        break;
-    case 'f':
-        if (size == sizeof(float)) {
-            type_num = NPY_FLOAT;
-        }
-        else if (size == sizeof(double)) {
-            type_num = NPY_DOUBLE;
-        }
-        else if (size == sizeof(longdouble)) {
-            type_num = NPY_LONGDOUBLE;
-        }
-        else {
-            PyErr_SetString(PyExc_ValueError, msg);
-            return NULL;
-        }
-        break;
-    case 'c':
-        if (size == sizeof(float)*2) {
-            type_num = NPY_CFLOAT;
-        }
-        else if (size == sizeof(double)*2) {
-            type_num = NPY_CDOUBLE;
-        }
-        else if (size == sizeof(longdouble)*2) {
-            type_num = NPY_CLONGDOUBLE;
-        }
-        else {
-            PyErr_SetString(PyExc_ValueError, msg);
-            return NULL;
-        }
-        break;
-    case 'O':
-        if (size == sizeof(PyObject *)) {
-            type_num = NPY_OBJECT;
-        }
-        else {
-            PyErr_SetString(PyExc_ValueError, msg);
-            return NULL;
-        }
-        break;
-    case NPY_STRINGLTR:
-        type_num = NPY_STRING;
-        break;
-    case NPY_UNICODELTR:
-        type_num = NPY_UNICODE;
-        size <<= 2;
-        break;
-    case 'V':
-        type_num = NPY_VOID;
-        break;
-    default:
-        PyErr_SetString(PyExc_ValueError, msg);
+    if (stringobj == NULL) {
         return NULL;
     }
-
-    descr = PyArray_DescrFromType(type_num);
-    if (descr == NULL) {
+    if (PyArray_DescrConverter(stringobj, &descr) != NPY_SUCCEED) {
+        Py_DECREF(stringobj);
         return NULL;
     }
-    swap = !PyArray_ISNBO(swapchar);
-    if (descr->elsize == 0 || swap) {
-        /* Need to make a new PyArray_Descr */
-        PyArray_DESCR_REPLACE(descr);
-        if (descr==NULL) {
-            return NULL;
-        }
-        if (descr->elsize == 0) {
-            descr->elsize = size;
-        }
-        if (swap) {
-            descr->byteorder = swapchar;
-        }
-    }
+    Py_DECREF(stringobj);
     return descr;
 }
 
-NPY_NO_EXPORT char *
-index2ptr(PyArrayObject *mp, intp i)
+NPY_NO_EXPORT int
+check_and_adjust_index(npy_intp *index, npy_intp max_item, int axis)
 {
-    intp dim0;
+    /* Check that index is valid, taking into account negative indices */
+    if ((*index < -max_item) || (*index >= max_item)) {
+        /* Try to be as clear as possible about what went wrong. */
+        if (axis >= 0) {
+            PyErr_Format(PyExc_IndexError,
+                         "index %"NPY_INTP_FMT" is out of bounds "
+                         "for axis %d with size %"NPY_INTP_FMT,
+                         *index, axis, max_item);
+        } else {
+            PyErr_Format(PyExc_IndexError,
+                         "index %"NPY_INTP_FMT" is out of bounds "
+                         "for size %"NPY_INTP_FMT,
+                         *index, max_item);
+        }
+        return -1;
+    }
+    /* adjust negative indices */
+    if (*index < 0) {
+        *index += max_item;
+    }
+    return 0;
+}
+
+NPY_NO_EXPORT char *
+index2ptr(PyArrayObject *mp, npy_intp i)
+{
+    npy_intp dim0;
 
     if (PyArray_NDIM(mp) == 0) {
         PyErr_SetString(PyExc_IndexError, "0-d arrays can't be indexed");
         return NULL;
     }
     dim0 = PyArray_DIMS(mp)[0];
-    if (i < 0) {
-        i += dim0;
-    }
-    if (i == 0 && dim0 > 0) {
+    if (check_and_adjust_index(&i, dim0, 0) < 0)
+        return NULL;
+    if (i == 0) {
         return PyArray_DATA(mp);
     }
-    if (i > 0 && i < dim0) {
-        return PyArray_DATA(mp)+i*PyArray_STRIDES(mp)[0];
-    }
-    PyErr_SetString(PyExc_IndexError,"index out of bounds");
-    return NULL;
+    return PyArray_DATA(mp)+i*PyArray_STRIDES(mp)[0];
 }
 
 NPY_NO_EXPORT int
@@ -539,7 +583,7 @@ _zerofill(PyArrayObject *ret)
         }
     }
     else {
-        intp n = PyArray_NBYTES(ret);
+        npy_intp n = PyArray_NBYTES(ret);
         memset(PyArray_DATA(ret), 0, n);
     }
     return 0;
@@ -549,7 +593,7 @@ NPY_NO_EXPORT int
 _IsAligned(PyArrayObject *ap)
 {
     int i, alignment, aligned = 1;
-    intp ptr;
+    npy_intp ptr;
 
     /* The special casing for STRING and VOID types was removed
      * in accordance with http://projects.scipy.org/numpy/ticket/1227
@@ -562,7 +606,7 @@ _IsAligned(PyArrayObject *ap)
     if (alignment == 1) {
         return 1;
     }
-    ptr = (intp) PyArray_DATA(ap);
+    ptr = (npy_intp) PyArray_DATA(ap);
     aligned = (ptr % alignment) == 0;
     for (i = 0; i < PyArray_NDIM(ap); i++) {
         aligned &= ((PyArray_STRIDES(ap)[i] % alignment) == 0);
@@ -570,7 +614,7 @@ _IsAligned(PyArrayObject *ap)
     return aligned != 0;
 }
 
-NPY_NO_EXPORT Bool
+NPY_NO_EXPORT npy_bool
 _IsWriteable(PyArrayObject *ap)
 {
     PyObject *base=PyArray_BASE(ap);
@@ -579,7 +623,7 @@ _IsWriteable(PyArrayObject *ap)
 
     /* If we own our own data, then no-problem */
     if ((base == NULL) || (PyArray_FLAGS(ap) & NPY_ARRAY_OWNDATA)) {
-        return TRUE;
+        return NPY_TRUE;
     }
     /*
      * Get to the final base object
@@ -607,10 +651,10 @@ _IsWriteable(PyArrayObject *ap)
      * -- could be abused --
      */
     if (PyString_Check(base)) {
-        return TRUE;
+        return NPY_TRUE;
     }
     if (PyObject_AsWriteBuffer(base, &dummy, &n) < 0) {
-        return FALSE;
+        return NPY_FALSE;
     }
-    return TRUE;
+    return NPY_TRUE;
 }

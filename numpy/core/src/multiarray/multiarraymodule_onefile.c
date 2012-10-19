@@ -48,14 +48,7 @@
 #include "array_assign.c"
 #include "array_assign_scalar.c"
 #include "array_assign_array.c"
-#include "reduction.c"
-#include "na_mask.c"
-#include "na_object.c"
-#include "boolean_ops.c"
-
-#ifndef Py_UNICODE_WIDE
 #include "ucsnarrow.c"
-#endif
 
 #include "arrayobject.c"
 

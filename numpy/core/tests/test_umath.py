@@ -1,8 +1,23 @@
 import sys
+import platform
 
 from numpy.testing import *
 import numpy.core.umath as ncu
 import numpy as np
+
+
+def on_powerpc():
+    """ True if we are running on a Power PC platform."""
+    return platform.processor() == 'powerpc' or \
+           platform.machine().startswith('ppc')
+
+
+class _FilterInvalids(object):
+    def setUp(self):
+        self.olderr = np.seterr(invalid='ignore')
+
+    def tearDown(self):
+        np.seterr(**self.olderr)
 
 
 class TestDivision(TestCase):
@@ -128,6 +143,9 @@ class TestPower(TestCase):
             assert_complex_equal(np.power(zero, -p), cnan)
         assert_complex_equal(np.power(zero, -1+0.2j), cnan)
 
+        def test_fast_power(self):
+            x=np.array([1,2,3], np.int16)
+            assert (x**2.00001).dtype is (x**2.0).dtype
 
 class TestLog2(TestCase):
     def test_log2_values(self) :
@@ -149,7 +167,7 @@ class TestExp2(TestCase):
             assert_almost_equal(np.exp2(yf), xf)
 
 
-class TestLogAddExp2(object):
+class TestLogAddExp2(_FilterInvalids):
     # Need test for intermediate precisions
     def test_logaddexp2_values(self) :
         x = [1, 2, 3, 4, 5]
@@ -216,7 +234,7 @@ class TestExp(TestCase):
             assert_almost_equal(np.exp(yf), xf)
 
 
-class TestLogAddExp(object):
+class TestLogAddExp(_FilterInvalids):
     def test_logaddexp_values(self) :
         x = [1, 2, 3, 4, 5]
         y = [5, 4, 3, 2, 1]
@@ -429,7 +447,7 @@ class TestLdexp(TestCase):
             np.seterr(**err)
 
 
-class TestMaximum(TestCase):
+class TestMaximum(_FilterInvalids):
     def test_reduce(self):
         dflt = np.typecodes['AllFloat']
         dint = np.typecodes['AllInteger']
@@ -476,7 +494,7 @@ class TestMaximum(TestCase):
         assert_equal(np.maximum(arg1, arg2), arg2)
 
 
-class TestMinimum(TestCase):
+class TestMinimum(_FilterInvalids):
     def test_reduce(self):
         dflt = np.typecodes['AllFloat']
         dint = np.typecodes['AllInteger']
@@ -523,7 +541,7 @@ class TestMinimum(TestCase):
         assert_equal(np.minimum(arg1, arg2), arg1)
 
 
-class TestFmax(TestCase):
+class TestFmax(_FilterInvalids):
     def test_reduce(self):
         dflt = np.typecodes['AllFloat']
         dint = np.typecodes['AllInteger']
@@ -565,7 +583,7 @@ class TestFmax(TestCase):
             assert_equal(np.fmax(arg1, arg2), out)
 
 
-class TestFmin(TestCase):
+class TestFmin(_FilterInvalids):
     def test_reduce(self):
         dflt = np.typecodes['AllFloat']
         dint = np.typecodes['AllInteger']
@@ -1107,7 +1125,8 @@ def test_nextafter():
 def test_nextafterf():
     return _test_nextafter(np.float32)
 
-@dec.knownfailureif(sys.platform == 'win32', "Long double support buggy on win32")
+@dec.knownfailureif(sys.platform == 'win32' or on_powerpc(),
+            "Long double support buggy on win32 and PPC, ticket 1664.")
 def test_nextafterl():
     return _test_nextafter(np.longdouble)
 
@@ -1132,7 +1151,8 @@ def test_spacing():
 def test_spacingf():
     return _test_spacing(np.float32)
 
-@dec.knownfailureif(sys.platform == 'win32', "Long double support buggy on win32")
+@dec.knownfailureif(sys.platform == 'win32' or on_powerpc(),
+            "Long double support buggy on win32 and PPC, ticket 1664.")
 def test_spacingl():
     return _test_spacing(np.longdouble)
 
@@ -1214,19 +1234,24 @@ def test_complex_nan_comparisons():
     fins = [complex(1, 0), complex(-1, 0), complex(0, 1), complex(0, -1),
             complex(1, 1), complex(-1, -1), complex(0, 0)]
 
-    for x in nans + fins:
-        x = np.array([x])
-        for y in nans + fins:
-            y = np.array([y])
+    olderr = np.seterr(invalid='ignore')
+    try:
+        for x in nans + fins:
+            x = np.array([x])
+            for y in nans + fins:
+                y = np.array([y])
 
-            if np.isfinite(x) and np.isfinite(y):
-                continue
+                if np.isfinite(x) and np.isfinite(y):
+                    continue
 
-            assert_equal(x < y, False, err_msg="%r < %r" % (x, y))
-            assert_equal(x > y, False, err_msg="%r > %r" % (x, y))
-            assert_equal(x <= y, False, err_msg="%r <= %r" % (x, y))
-            assert_equal(x >= y, False, err_msg="%r >= %r" % (x, y))
-            assert_equal(x == y, False, err_msg="%r == %r" % (x, y))
+                assert_equal(x < y, False, err_msg="%r < %r" % (x, y))
+                assert_equal(x > y, False, err_msg="%r > %r" % (x, y))
+                assert_equal(x <= y, False, err_msg="%r <= %r" % (x, y))
+                assert_equal(x >= y, False, err_msg="%r >= %r" % (x, y))
+                assert_equal(x == y, False, err_msg="%r == %r" % (x, y))
+    finally:
+        np.seterr(**olderr)
+
 
 if __name__ == "__main__":
     run_module_suite()

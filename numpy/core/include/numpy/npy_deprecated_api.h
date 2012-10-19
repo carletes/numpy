@@ -6,9 +6,9 @@
 #define _WARN___STR1__(x) _WARN___STR2__(x)
 #define _WARN___LOC__ __FILE__ "("_WARN___STR1__(__LINE__)") : Warning Msg: "
 #pragma message(_WARN___LOC__"Using deprecated NumPy API, disable it by " \
-                            "#defining NPY_NO_DEPRECATED_API")
+                            "#defining NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION")
 #elif defined(__GNUC__)
-#warning "Using deprecated NumPy API, disable it by #defining NPY_NO_DEPRECATED_API"
+#warning "Using deprecated NumPy API, disable it by #defining NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION"
 #endif
 /* TODO: How to do this warning message for other compilers? */
 
@@ -19,7 +19,7 @@
  * and namespace pollution currently produced by the NumPy headers.
  */
 
-#ifdef NPY_NO_DEPRECATED_API
+#if defined(NPY_NO_DEPRECATED_API)
 #error Should never include npy_deprecated_api directly.
 #endif
 
@@ -94,5 +94,36 @@
  * macro.
  */
 #define FORTRAN_IF PyArray_FORTRAN_IF
+
+/* Deprecated as of NumPy 1.7, datetime64 uses c_metadata instead */
+#define NPY_METADATA_DTSTR "__timeunit__"
+
+/*
+ * Deprecated as of NumPy 1.7.
+ * The reasoning:
+ *  - These are for datetime, but there's no datetime "namespace".
+ *  - They just turn NPY_STR_<x> into "<x>", which is just
+ *    making something simple be indirected.
+ */
+#define NPY_STR_Y "Y"
+#define NPY_STR_M "M"
+#define NPY_STR_W "W"
+#define NPY_STR_D "D"
+#define NPY_STR_h "h"
+#define NPY_STR_m "m"
+#define NPY_STR_s "s"
+#define NPY_STR_ms "ms"
+#define NPY_STR_us "us"
+#define NPY_STR_ns "ns"
+#define NPY_STR_ps "ps"
+#define NPY_STR_fs "fs"
+#define NPY_STR_as "as"
+
+/*
+ * The macros in old_defines.h are Deprecated as of NumPy 1.7 and will be
+ * removed in the next major release.
+ */
+#include "old_defines.h"
+
 
 #endif

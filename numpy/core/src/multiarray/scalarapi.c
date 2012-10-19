@@ -2,9 +2,8 @@
 #include <Python.h>
 #include "structmember.h"
 
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #define _MULTIARRAYMODULE
-#define NPY_NO_PREFIX
 #include "numpy/arrayobject.h"
 #include "numpy/arrayscalars.h"
 
@@ -12,14 +11,13 @@
 
 #include "npy_config.h"
 
-#include "numpy/npy_3kcompat.h"
+#include "npy_pycompat.h"
 
 #include "ctors.h"
 #include "descriptor.h"
 #include "scalartypes.h"
 
 #include "common.h"
-#include "na_object.h"
 
 static PyArray_Descr *
 _descr_from_subtype(PyObject *type)
@@ -27,7 +25,7 @@ _descr_from_subtype(PyObject *type)
     PyObject *mro;
     mro = ((PyTypeObject *)type)->tp_mro;
     if (PyTuple_GET_SIZE(mro) < 2) {
-        return PyArray_DescrFromType(PyArray_OBJECT);
+        return PyArray_DescrFromType(NPY_OBJECT);
     }
     return PyArray_DescrFromTypeObject(PyTuple_GET_ITEM(mro, 1));
 }
@@ -37,7 +35,7 @@ scalar_value(PyObject *scalar, PyArray_Descr *descr)
 {
     int type_num;
     int align;
-    intp memloc;
+    npy_intp memloc;
     if (descr == NULL) {
         descr = PyArray_DescrFromScalar(scalar);
         type_num = descr->type_num;
@@ -149,7 +147,7 @@ scalar_value(PyObject *scalar, PyArray_Descr *descr)
      * Use the alignment flag to figure out where the data begins
      * after a PyObject_HEAD
      */
-    memloc = (intp)scalar;
+    memloc = (npy_intp)scalar;
     memloc += sizeof(PyObject);
     /* now round-up to the nearest alignment value */
     align = descr->alignment;
@@ -277,7 +275,7 @@ PyArray_FromScalar(PyObject *scalar, PyArray_Descr *outcode)
 
     /* convert to 0-dim array of scalar typecode */
     typecode = PyArray_DescrFromScalar(scalar);
-    if ((typecode->type_num == PyArray_VOID) &&
+    if ((typecode->type_num == NPY_VOID) &&
             !(((PyVoidScalarObject *)scalar)->flags & NPY_ARRAY_OWNDATA) &&
             outcode == NULL) {
         r = (PyArrayObject *)PyArray_NewFromDescr(&PyArray_Type,
@@ -316,9 +314,9 @@ PyArray_FromScalar(PyObject *scalar, PyArray_Descr *outcode)
     memptr = scalar_value(scalar, typecode);
 
 #ifndef Py_UNICODE_WIDE
-    if (typecode->type_num == PyArray_UNICODE) {
+    if (typecode->type_num == NPY_UNICODE) {
         PyUCS2Buffer_AsUCS4((Py_UNICODE *)memptr,
-                (PyArray_UCS4 *)PyArray_DATA(r),
+                (npy_ucs4 *)PyArray_DATA(r),
                 PyUnicode_GET_SIZE(scalar),
                 PyArray_ITEMSIZE(r) >> 2);
     }
@@ -336,7 +334,7 @@ finish:
     if (outcode == NULL) {
         return (PyObject *)r;
     }
-    if (outcode->type_num == typecode->type_num) {
+    if (PyArray_EquivTypes(outcode, typecode)) {
         if (!PyTypeNum_ISEXTENDED(typecode->type_num)
                 || (outcode->elsize == typecode->elsize)) {
             Py_DECREF(outcode);
@@ -399,7 +397,7 @@ PyArray_ScalarFromObject(PyObject *object)
         PyArrayScalar_VAL(ret, CDouble).imag = PyComplex_ImagAsDouble(object);
     }
     else if (PyLong_Check(object)) {
-        longlong val;
+        npy_longlong val;
         val = PyLong_AsLongLong(object);
         if (val==-1 && PyErr_Occurred()) {
             PyErr_Clear();
@@ -454,7 +452,7 @@ PyArray_DescrFromTypeObject(PyObject *type)
         typenum = NPY_VOID;
     }
 
-    if (typenum != PyArray_NOTYPE) {
+    if (typenum != NPY_NOTYPE) {
         return PyArray_DescrFromType(typenum);
     }
 
@@ -533,38 +531,19 @@ PyArray_DescrFromScalar(PyObject *sc)
     }
 
     if (PyArray_IsScalar(sc, Datetime) || PyArray_IsScalar(sc, Timedelta)) {
-        PyObject *cobj;
         PyArray_DatetimeMetaData *dt_data;
 
-        dt_data = _pya_malloc(sizeof(PyArray_DatetimeMetaData));
         if (PyArray_IsScalar(sc, Datetime)) {
-            descr = PyArray_DescrNewFromType(PyArray_DATETIME);
-            memcpy(dt_data, &((PyDatetimeScalarObject *)sc)->obmeta,
-                   sizeof(PyArray_DatetimeMetaData));
+            descr = PyArray_DescrNewFromType(NPY_DATETIME);
         }
         else {
             /* Timedelta */
-            descr = PyArray_DescrNewFromType(PyArray_TIMEDELTA);
-            memcpy(dt_data, &((PyTimedeltaScalarObject *)sc)->obmeta,
-                   sizeof(PyArray_DatetimeMetaData));
+            descr = PyArray_DescrNewFromType(NPY_TIMEDELTA);
         }
-        cobj = NpyCapsule_FromVoidPtr((void *)dt_data, simple_capsule_dtor);
+        dt_data = &(((PyArray_DatetimeDTypeMetaData *)descr->c_metadata)->meta);
+        memcpy(dt_data, &((PyDatetimeScalarObject *)sc)->obmeta,
+               sizeof(PyArray_DatetimeMetaData));
 
-        /* Add correct meta-data to the data-type */
-        if (descr == NULL) {
-            Py_DECREF(cobj);
-            return NULL;
-        }
-        Py_XDECREF(descr->metadata);
-        if ((descr->metadata = PyDict_New()) == NULL) {
-            Py_DECREF(descr);
-            Py_DECREF(cobj);
-            return NULL;
-        }
-
-        /* Assume this sets a new reference to cobj */
-        PyDict_SetItemString(descr->metadata, NPY_METADATA_DTSTR, cobj);
-        Py_DECREF(cobj);
         return descr;
     }
 
@@ -572,10 +551,10 @@ PyArray_DescrFromScalar(PyObject *sc)
     if (descr->elsize == 0) {
         PyArray_DESCR_REPLACE(descr);
         type_num = descr->type_num;
-        if (type_num == PyArray_STRING) {
+        if (type_num == NPY_STRING) {
             descr->elsize = PyString_GET_SIZE(sc);
         }
-        else if (type_num == PyArray_UNICODE) {
+        else if (type_num == NPY_UNICODE) {
             descr->elsize = PyUnicode_GET_DATA_SIZE(sc);
 #ifndef Py_UNICODE_WIDE
             descr->elsize <<= 1;
@@ -636,8 +615,8 @@ PyArray_Scalar(void *data, PyArray_Descr *descr, PyObject *base)
     int swap;
 
     type_num = descr->type_num;
-    if (type_num == PyArray_BOOL) {
-        PyArrayScalar_RETURN_BOOL_FROM_LONG(*(Bool*)data);
+    if (type_num == NPY_BOOL) {
+        PyArrayScalar_RETURN_BOOL_FROM_LONG(*(npy_bool*)data);
     }
     else if (PyDataType_FLAGCHK(descr, NPY_USE_GETITEM)) {
         return descr->f->getitem(data, base);
@@ -654,7 +633,7 @@ PyArray_Scalar(void *data, PyArray_Descr *descr, PyObject *base)
         while(itemsize && *dptr-- == 0) {
             itemsize--;
         }
-        if (type_num == PyArray_UNICODE && itemsize) {
+        if (type_num == NPY_UNICODE && itemsize) {
             /*
              * make sure itemsize is a multiple of 4
              * so round up to nearest multiple
@@ -662,6 +641,35 @@ PyArray_Scalar(void *data, PyArray_Descr *descr, PyObject *base)
             itemsize = (((itemsize - 1) >> 2) + 1) << 2;
         }
     }
+#if PY_VERSION_HEX >= 0x03030000
+    if (type_num == NPY_UNICODE) {
+        PyObject *u, *args;
+        int byteorder;
+
+#if NPY_BYTE_ORDER == NPY_LITTLE_ENDIAN
+        byteorder = -1;
+#elif NPY_BYTE_ORDER == NPY_BIG_ENDIAN
+        byteorder = +1;
+#else
+        #error Endianness undefined ?
+#endif
+        if (swap) byteorder *= -1;
+
+        u = PyUnicode_DecodeUTF32(data, itemsize, NULL, &byteorder);
+        if (u == NULL) {
+            return NULL;
+        }
+        args = Py_BuildValue("(O)", u);
+        if (args == NULL) {
+            Py_DECREF(u);
+            return NULL;
+        }
+        obj = type->tp_new(type, args, NULL);
+        Py_DECREF(u);
+        Py_DECREF(args);
+        return obj;
+    }
+#endif
     if (type->tp_itemsize != 0) {
         /* String type */
         obj = type->tp_alloc(type, itemsize);
@@ -677,19 +685,14 @@ PyArray_Scalar(void *data, PyArray_Descr *descr, PyObject *base)
          * We need to copy the resolution information over to the scalar
          * Get the void * from the metadata dictionary
          */
-        PyObject *cobj;
         PyArray_DatetimeMetaData *dt_data;
-        cobj = PyDict_GetItemString(descr->metadata, NPY_METADATA_DTSTR);
 
-/* FIXME
- * There is no error handling here.
- */
-        dt_data = NpyCapsule_AsVoidPtr(cobj);
+        dt_data = &(((PyArray_DatetimeDTypeMetaData *)descr->c_metadata)->meta);
         memcpy(&(((PyDatetimeScalarObject *)obj)->obmeta), dt_data,
                sizeof(PyArray_DatetimeMetaData));
     }
     if (PyTypeNum_ISFLEXIBLE(type_num)) {
-        if (type_num == PyArray_STRING) {
+        if (type_num == NPY_STRING) {
             destptr = PyString_AS_STRING(obj);
             ((PyStringObject *)obj)->ob_shash = -1;
 #if !defined(NPY_PY3K)
@@ -698,38 +701,45 @@ PyArray_Scalar(void *data, PyArray_Descr *descr, PyObject *base)
             memcpy(destptr, data, itemsize);
             return obj;
         }
-        else if (type_num == PyArray_UNICODE) {
+#if PY_VERSION_HEX < 0x03030000
+        else if (type_num == NPY_UNICODE) {
+            /* tp_alloc inherited from Python PyBaseObject_Type */
             PyUnicodeObject *uni = (PyUnicodeObject*)obj;
             size_t length = itemsize >> 2;
+            Py_UNICODE *dst;
 #ifndef Py_UNICODE_WIDE
             char *buffer;
+            Py_UNICODE *tmp;
             int alloc = 0;
+
             length *= 2;
 #endif
-            /* Need an extra slot and need to use Python memory manager */
+            /* Set uni->str so that object can be deallocated on failure */
             uni->str = NULL;
-            destptr = PyMem_NEW(Py_UNICODE,length+1);
-            if (destptr == NULL) {
+            uni->defenc = NULL;
+            uni->hash = -1;
+            dst = PyObject_MALLOC(sizeof(Py_UNICODE) * (length + 1));
+            if (dst == NULL) {
                 Py_DECREF(obj);
-                return PyErr_NoMemory();
+                PyErr_NoMemory();
+                return NULL;
             }
-            uni->str = (Py_UNICODE *)destptr;
-            uni->str[0] = 0;
+#ifdef Py_UNICODE_WIDE
+            memcpy(dst, data, itemsize);
+            if (swap) {
+                byte_swap_vector(dst, length, 4);
+            }
+            uni->str = dst;
             uni->str[length] = 0;
             uni->length = length;
-            uni->hash = -1;
-            uni->defenc = NULL;
-#ifdef Py_UNICODE_WIDE
-            memcpy(destptr, data, itemsize);
-            if (swap) {
-                byte_swap_vector(destptr, length, 4);
-            }
 #else
             /* need aligned data buffer */
-            if ((swap) || ((((intp)data) % descr->alignment) != 0)) {
-                buffer = _pya_malloc(itemsize);
+            if ((swap) || ((((npy_intp)data) % descr->alignment) != 0)) {
+                buffer = malloc(itemsize);
                 if (buffer == NULL) {
-                    return PyErr_NoMemory();
+                    PyObject_FREE(dst);
+                    Py_DECREF(obj);
+                    PyErr_NoMemory();
                 }
                 alloc = 1;
                 memcpy(buffer, data, itemsize);
@@ -745,19 +755,25 @@ PyArray_Scalar(void *data, PyArray_Descr *descr, PyObject *base)
              * Allocated enough for 2-characters per itemsize.
              * Now convert from the data-buffer
              */
-            length = PyUCS2Buffer_FromUCS4(uni->str,
-                    (PyArray_UCS4 *)buffer, itemsize >> 2);
+            length = PyUCS2Buffer_FromUCS4(dst,
+                    (npy_ucs4 *)buffer, itemsize >> 2);
             if (alloc) {
-                _pya_free(buffer);
+                free(buffer);
             }
             /* Resize the unicode result */
-            if (MyPyUnicode_Resize(uni, length) < 0) {
+            tmp = PyObject_REALLOC(dst, sizeof(Py_UNICODE)*(length + 1));
+            if (tmp == NULL) {
+                PyObject_FREE(dst);
                 Py_DECREF(obj);
                 return NULL;
             }
+            uni->str = tmp;
+            uni->str[length] = 0;
+            uni->length = length;
 #endif
             return obj;
         }
+#endif /* PY_VERSION_HEX < 0x03030000 */
         else {
             PyVoidScalarObject *vobj = (PyVoidScalarObject *)obj;
             vobj->base = NULL;
@@ -816,18 +832,7 @@ PyArray_Return(PyArrayObject *mp)
     }
     if (PyArray_NDIM(mp) == 0) {
         PyObject *ret;
-        if (PyArray_HASMASKNA(mp)) {
-            npy_mask maskvalue = (npy_mask)(*PyArray_MASKNA_DATA(mp));
-            if (NpyMaskValue_IsExposed(maskvalue)) {
-                ret = PyArray_ToScalar(PyArray_DATA(mp), mp);
-            }
-            else {
-                ret = (PyObject *)NpyNA_FromObject((PyObject *)mp, 0);
-            }
-        }
-        else {
-            ret = PyArray_ToScalar(PyArray_DATA(mp), mp);
-        }
+        ret = PyArray_ToScalar(PyArray_DATA(mp), mp);
         Py_DECREF(mp);
         return ret;
     }

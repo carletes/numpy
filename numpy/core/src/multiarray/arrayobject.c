@@ -25,15 +25,14 @@ maintainer email:  oliphant.travis@ieee.org
 #include "structmember.h"
 
 /*#include <stdio.h>*/
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #define _MULTIARRAYMODULE
-#define NPY_NO_PREFIX
 #include "numpy/arrayobject.h"
 #include "numpy/arrayscalars.h"
 
 #include "npy_config.h"
 
-#include "numpy/npy_3kcompat.h"
+#include "npy_pycompat.h"
 
 #include "common.h"
 
@@ -50,8 +49,6 @@ maintainer email:  oliphant.travis@ieee.org
 #include "getset.h"
 #include "sequence.h"
 #include "buffer.h"
-#include "na_object.h"
-#include "na_mask.h"
 
 /*NUMPY_API
   Compute the size of an array (in number of items)
@@ -65,6 +62,57 @@ PyArray_Size(PyObject *op)
     else {
         return 0;
     }
+}
+
+/*NUMPY_API
+ *
+ * Precondition: 'arr' is a copy of 'base' (though possibly with different
+ * strides, ordering, etc.). This function sets the UPDATEIFCOPY flag and the
+ * ->base pointer on 'arr', so that when 'arr' is destructed, it will copy any
+ * changes back to 'base'.
+ *
+ * Steals a reference to 'base'.
+ *
+ * Returns 0 on success, -1 on failure.
+ */
+NPY_NO_EXPORT int
+PyArray_SetUpdateIfCopyBase(PyArrayObject *arr, PyArrayObject *base) 
+{
+    if (base == NULL) {
+        PyErr_SetString(PyExc_ValueError,
+                  "Cannot UPDATEIFCOPY to NULL array");
+        return -1;
+    }
+    if (PyArray_BASE(arr) != NULL) {
+        PyErr_SetString(PyExc_ValueError,
+                  "Cannot set array with existing base to UPDATEIFCOPY");
+        goto fail;
+    }
+    if (PyArray_FailUnlessWriteable(base, "UPDATEIFCOPY base") < 0) {
+        goto fail;
+    }
+    
+    /*
+     * Any writes to 'arr' will magicaly turn into writes to 'base', so we
+     * should warn if necessary.
+     */
+    if (PyArray_FLAGS(base) & NPY_ARRAY_WARN_ON_WRITE) {
+        PyArray_ENABLEFLAGS(arr, NPY_ARRAY_WARN_ON_WRITE);
+    }
+
+    /*
+     * Unlike PyArray_SetBaseObject, we do not compress the chain of base
+     * references.
+    */
+    ((PyArrayObject_fields *)arr)->base = (PyObject *)base;
+    PyArray_ENABLEFLAGS(arr, NPY_ARRAY_UPDATEIFCOPY);
+    PyArray_CLEARFLAGS(base, NPY_ARRAY_WRITEABLE);
+
+    return 0;
+
+  fail:
+    Py_DECREF(base);
+    return -1;
 }
 
 /*NUMPY_API
@@ -97,24 +145,20 @@ PyArray_SetBaseObject(PyArrayObject *arr, PyObject *obj)
     /*
      * Don't allow chains of views, always set the base
      * to the owner of the data. That is, either the first object
-     * which isn't an array, the first object with an NA mask
-     * which owns that NA mask, or the first object which owns
+     * which isn't an array, or the first object which owns
      * its own data.
      */
     while (PyArray_Check(obj) && (PyObject *)arr != obj) {
         PyArrayObject *obj_arr = (PyArrayObject *)obj;
         PyObject *tmp;
 
+        /* Propagate WARN_ON_WRITE through views. */
+        if (PyArray_FLAGS(obj_arr) & NPY_ARRAY_WARN_ON_WRITE) {
+            PyArray_ENABLEFLAGS(arr, NPY_ARRAY_WARN_ON_WRITE);
+        }
+
         /* If this array owns its own data, stop collapsing */
         if (PyArray_CHKFLAGS(obj_arr, NPY_ARRAY_OWNDATA)) {
-            break;
-        }
-        /*
-         * If 'arr' doesn't own its NA mask, then if
-         * 'obj' is NA masked and owns the mask, stop collapsing
-         */
-        if (!PyArray_CHKFLAGS(arr, NPY_ARRAY_OWNMASKNA) &&
-                        PyArray_CHKFLAGS(obj_arr, NPY_ARRAY_OWNMASKNA)) {
             break;
         }
         /* If there's no base, stop collapsing */
@@ -146,7 +190,7 @@ PyArray_SetBaseObject(PyArrayObject *arr, PyObject *obj)
 NPY_NO_EXPORT int
 PyArray_CopyObject(PyArrayObject *dest, PyObject *src_object)
 {
-    int ret, contains_na = 0;
+    int ret = 0;
     PyArrayObject *src;
     PyArray_Descr *dtype = NULL;
     int ndim = 0;
@@ -157,7 +201,7 @@ PyArray_CopyObject(PyArrayObject *dest, PyObject *src_object)
      * Special code to mimic Numeric behavior for
      * character arrays.
      */
-    if (PyArray_DESCR(dest)->type == PyArray_CHARLTR &&
+    if (PyArray_DESCR(dest)->type == NPY_CHARLTR &&
                                 PyArray_NDIM(dest) > 0 &&
                                 PyString_Check(src_object)) {
         npy_intp n_new, n_old;
@@ -181,17 +225,8 @@ PyArray_CopyObject(PyArrayObject *dest, PyObject *src_object)
      * Get either an array object we can copy from, or its parameters
      * if there isn't a convenient array available.
      */
-    if (PyArray_GetArrayParamsFromObjectEx(src_object, PyArray_DESCR(dest),
-                0, &dtype, &ndim, dims, &contains_na, &src, NULL) < 0) {
-        Py_DECREF(src_object);
-        return -1;
-    }
-
-    if (contains_na && !(PyArray_HasNASupport(dest) ||
-                         PyArray_DESCR(dest)->type_num == NPY_OBJECT)) {
-        PyErr_SetString(PyExc_ValueError,
-                "Cannot set NumPy array values to NA values without first "
-                "enabling NA support in the array");
+    if (PyArray_GetArrayParamsFromObject(src_object, PyArray_DESCR(dest),
+                0, &dtype, &ndim, dims, &src, NULL) < 0) {
         Py_DECREF(src_object);
         return -1;
     }
@@ -200,13 +235,6 @@ PyArray_CopyObject(PyArrayObject *dest, PyObject *src_object)
     if (src == NULL) {
         /* If the input is scalar */
         if (ndim == 0) {
-            NpyNA *na = NULL;
-
-            /* Get an NpyNA if src is NA, but don't raise an error */
-            if (PyArray_HasNASupport(dest)) {
-                na = NpyNA_FromObject(src_object, 1);
-            }
-
             /* If there's one dest element and src is a Python scalar */
             if (PyArray_IsScalar(src_object, Generic)) {
                 char *value;
@@ -221,23 +249,10 @@ PyArray_CopyObject(PyArrayObject *dest, PyObject *src_object)
 
                 /* TODO: switch to SAME_KIND casting */
                 retcode = PyArray_AssignRawScalar(dest, dtype, value,
-                                        NULL, NPY_UNSAFE_CASTING, 0, NULL);
+                                        NULL, NPY_UNSAFE_CASTING);
                 Py_DECREF(dtype);
                 Py_DECREF(src_object);
                 return retcode;
-            }
-            /* Assigning NA affects the mask if it exists */
-            else if (na != NULL) {
-                if (PyArray_AssignNA(dest, na, NULL, 0, NULL) < 0) {
-                    Py_DECREF(dtype);
-                    Py_DECREF(na);
-                    Py_DECREF(src_object);
-                    return -1;
-                }
-
-                Py_DECREF(na);
-                Py_DECREF(src_object);
-                return 0;
             }
             /* Otherwise use the dtype's setitem function */
             else {
@@ -246,10 +261,6 @@ PyArray_CopyObject(PyArrayObject *dest, PyObject *src_object)
                     Py_DECREF(src_object);
                     ret = PyArray_DESCR(dest)->f->setitem(src_object,
                                                 PyArray_DATA(dest), dest);
-                    /* Unmask the value if necessary */
-                    if (ret == 0 && PyArray_HASMASKNA(dest)) {
-                        PyArray_MASKNA_DATA(dest)[0] = 1;
-                    }
                     return ret;
                 }
                 else {
@@ -289,12 +300,6 @@ PyArray_CopyObject(PyArrayObject *dest, PyObject *src_object)
                 Py_DECREF(src_object);
                 return -1;
             }
-            if (PyArray_HASMASKNA(dest)) {
-                if (PyArray_AllocateMaskNA(dest, 1, 0, 1) < 0) {
-                    Py_DECREF(src_object);
-                    return -1;
-                }
-            }
             if (PyArray_AssignFromSequence(src, src_object) < 0) {
                 Py_DECREF(src);
                 Py_DECREF(src_object);
@@ -325,7 +330,7 @@ PyArray_CopyObject(PyArrayObject *dest, PyObject *src_object)
 /*
   Given a string return the type-number for
   the data-type with that string as the type-object name.
-  Returns PyArray_NOTYPE without setting an error if no type can be
+  Returns NPY_NOTYPE without setting an error if no type can be
   found.  Only works for user-defined data-types.
 */
 
@@ -343,7 +348,7 @@ PyArray_TypeNumFromName(char *str)
             return descr->type_num;
         }
     }
-    return PyArray_NOTYPE;
+    return NPY_NOTYPE;
 }
 
 /*********************** end C-API functions **********************/
@@ -402,14 +407,6 @@ array_dealloc(PyArrayObject *self)
         PyDataMem_FREE(fa->data);
     }
 
-    /* If the array has an NA mask, free its associated data */
-    if (fa->flags & NPY_ARRAY_MASKNA) {
-        Py_XDECREF(fa->maskna_dtype);
-        if (fa->flags & NPY_ARRAY_OWNMASKNA) {
-            PyDataMem_FREE(fa->maskna_data);
-        }
-    }
-
     PyDimMem_FREE(fa->dimensions);
     Py_DECREF(fa->descr);
     Py_TYPE(self)->tp_free((PyObject *)self);
@@ -426,7 +423,7 @@ dump_data(char **string, int *n, int *max_n, char *data, int nd,
 
 #define CHECK_MEMORY do { if (*n >= *max_n-16) {         \
         *max_n *= 2;                                     \
-        *string = (char *)_pya_realloc(*string, *max_n); \
+        *string = (char *)PyArray_realloc(*string, *max_n); \
     }} while (0)
 
     if (nd == 0) {
@@ -513,34 +510,18 @@ PyArray_DebugPrint(PyArrayObject *obj)
 
     printf(" flags :");
     if (fobj->flags & NPY_ARRAY_C_CONTIGUOUS)
-        printf(" C_CONTIGUOUS");
+        printf(" NPY_C_CONTIGUOUS");
     if (fobj->flags & NPY_ARRAY_F_CONTIGUOUS)
-        printf(" F_CONTIGUOUS");
+        printf(" NPY_F_CONTIGUOUS");
     if (fobj->flags & NPY_ARRAY_OWNDATA)
-        printf(" OWNDATA");
+        printf(" NPY_OWNDATA");
     if (fobj->flags & NPY_ARRAY_ALIGNED)
-        printf(" ALIGNED");
+        printf(" NPY_ALIGNED");
     if (fobj->flags & NPY_ARRAY_WRITEABLE)
-        printf(" WRITEABLE");
+        printf(" NPY_WRITEABLE");
     if (fobj->flags & NPY_ARRAY_UPDATEIFCOPY)
-        printf(" UPDATEIFCOPY");
-    if (fobj->flags & NPY_ARRAY_MASKNA)
-        printf(" MASKNA");
-    if (fobj->flags & NPY_ARRAY_OWNMASKNA)
-        printf(" OWNMASKNA");
+        printf(" NPY_UPDATEIFCOPY");
     printf("\n");
-
-    if (fobj->flags & NPY_ARRAY_MASKNA) {
-        printf(" maskna dtype  : ");
-        PyObject_Print((PyObject *)fobj->maskna_dtype, stdout, 0);
-        printf("\n");
-        printf(" maskna data   : %p\n", fobj->maskna_data);
-        printf(" maskna strides:");
-        for (i = 0; i < fobj->nd; ++i) {
-            printf(" %d", (int)fobj->maskna_strides[i]);
-        }
-        printf("\n");
-    }
 
     if (fobj->base != NULL && PyArray_Check(fobj->base)) {
         printf("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n");
@@ -561,7 +542,7 @@ array_repr_builtin(PyArrayObject *self, int repr)
 
     max_n = PyArray_NBYTES(self)*4*sizeof(char) + 7;
 
-    if ((string = (char *)_pya_malloc(max_n)) == NULL) {
+    if ((string = (char *)PyArray_malloc(max_n)) == NULL) {
         return PyErr_NoMemory();
     }
 
@@ -575,7 +556,7 @@ array_repr_builtin(PyArrayObject *self, int repr)
     if (dump_data(&string, &n, &max_n, PyArray_DATA(self),
                   PyArray_NDIM(self), PyArray_DIMS(self),
                   PyArray_STRIDES(self), self) < 0) {
-        _pya_free(string);
+        PyArray_free(string);
         return NULL;
     }
 
@@ -595,7 +576,7 @@ array_repr_builtin(PyArrayObject *self, int repr)
         ret = PyUString_FromStringAndSize(string, n);
     }
 
-    _pya_free(string);
+    PyArray_free(string);
     return ret;
 }
 
@@ -676,7 +657,7 @@ array_str(PyArrayObject *self)
 NPY_NO_EXPORT int
 PyArray_CompareUCS4(npy_ucs4 *s1, npy_ucs4 *s2, size_t len)
 {
-    PyArray_UCS4 c1, c2;
+    npy_ucs4 c1, c2;
     while(len-- > 0) {
         c1 = *s1++;
         c2 = *s2++;
@@ -705,6 +686,60 @@ PyArray_CompareString(char *s1, char *s2, size_t len)
 }
 
 
+/* Call this from contexts where an array might be written to, but we have no
+ * way to tell. (E.g., when converting to a read-write buffer.)
+ */
+NPY_NO_EXPORT int
+array_might_be_written(PyArrayObject *obj)
+{
+    const char *msg =
+        "Numpy has detected that you (may be) writing to an array returned\n"
+        "by numpy.diagonal or by selecting multiple fields in a record\n"
+        "array. This code will likely break in the next numpy release --\n"
+        "see numpy.diagonal or arrays.indexing reference docs for details.\n"
+        "The quick fix is to make an explicit copy (e.g., do\n"
+        "arr.diagonal().copy() or arr[['f0','f1']].copy()).";
+    if (PyArray_FLAGS(obj) & NPY_ARRAY_WARN_ON_WRITE) {
+        if (DEPRECATE_FUTUREWARNING(msg) < 0) {
+            return -1;
+        }
+        /* Only warn once per array */
+        while (1) {
+            PyArray_CLEARFLAGS(obj, NPY_ARRAY_WARN_ON_WRITE);
+            if (!PyArray_BASE(obj) || !PyArray_Check(PyArray_BASE(obj))) {
+                break;
+            }
+            obj = (PyArrayObject *)PyArray_BASE(obj);
+        }
+    }
+    return 0;
+}
+
+/*NUMPY_API
+ *
+ * This function does nothing if obj is writeable, and raises an exception
+ * (and returns -1) if obj is not writeable. It may also do other
+ * house-keeping, such as issuing warnings on arrays which are transitioning
+ * to become views. Always call this function at some point before writing to
+ * an array.
+ *
+ * 'name' is a name for the array, used to give better error
+ * messages. Something like "assignment destination", "output array", or even
+ * just "array".
+ */
+NPY_NO_EXPORT int
+PyArray_FailUnlessWriteable(PyArrayObject *obj, const char *name)
+{
+    if (!PyArray_ISWRITEABLE(obj)) {
+        PyErr_Format(PyExc_ValueError, "%s is read-only", name);
+        return -1;
+    }
+    if (array_might_be_written(obj) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
 /* This also handles possibly mis-aligned data */
 /* Compare s1 and s2 which are not necessarily NULL-terminated.
    s1 is of length len1
@@ -712,25 +747,25 @@ PyArray_CompareString(char *s1, char *s2, size_t len)
    If they are NULL terminated, then stop comparison.
 */
 static int
-_myunincmp(PyArray_UCS4 *s1, PyArray_UCS4 *s2, int len1, int len2)
+_myunincmp(npy_ucs4 *s1, npy_ucs4 *s2, int len1, int len2)
 {
-    PyArray_UCS4 *sptr;
-    PyArray_UCS4 *s1t=s1, *s2t=s2;
+    npy_ucs4 *sptr;
+    npy_ucs4 *s1t=s1, *s2t=s2;
     int val;
     npy_intp size;
     int diff;
 
-    if ((npy_intp)s1 % sizeof(PyArray_UCS4) != 0) {
-        size = len1*sizeof(PyArray_UCS4);
+    if ((npy_intp)s1 % sizeof(npy_ucs4) != 0) {
+        size = len1*sizeof(npy_ucs4);
         s1t = malloc(size);
         memcpy(s1t, s1, size);
     }
-    if ((npy_intp)s2 % sizeof(PyArray_UCS4) != 0) {
-        size = len2*sizeof(PyArray_UCS4);
+    if ((npy_intp)s2 % sizeof(npy_ucs4) != 0) {
+        size = len2*sizeof(npy_ucs4);
         s2t = malloc(size);
         memcpy(s2t, s2, size);
     }
-    val = PyArray_CompareUCS4(s1t, s2t, MIN(len1,len2));
+    val = PyArray_CompareUCS4(s1t, s2t, PyArray_MIN(len1,len2));
     if ((val != 0) || (len1 == len2)) {
         goto finish;
     }
@@ -778,7 +813,7 @@ _mystrncmp(char *s1, char *s2, int len1, int len2)
     int val;
     int diff;
 
-    val = memcmp(s1, s2, MIN(len1, len2));
+    val = memcmp(s1, s2, PyArray_MIN(len1, len2));
     if ((val != 0) || (len1 == len2)) {
         return val;
     }
@@ -825,11 +860,11 @@ static void _rstripw(char *s, int n)
     }
 }
 
-static void _unistripw(PyArray_UCS4 *s, int n)
+static void _unistripw(npy_ucs4 *s, int n)
 {
     int i;
     for (i = n - 1; i >= 1; i--) { /* Never strip to length 0. */
-        PyArray_UCS4 c = s[i];
+        npy_ucs4 c = s[i];
         if (!c || isspace(c)) {
             s[i] = 0;
         }
@@ -866,22 +901,22 @@ _char_release(char *ptr, int nc)
 static char *
 _uni_copy_n_strip(char *original, char *temp, int nc)
 {
-    if (nc*sizeof(PyArray_UCS4) > SMALL_STRING) {
-        temp = malloc(nc*sizeof(PyArray_UCS4));
+    if (nc*sizeof(npy_ucs4) > SMALL_STRING) {
+        temp = malloc(nc*sizeof(npy_ucs4));
         if (!temp) {
             PyErr_NoMemory();
             return NULL;
         }
     }
-    memcpy(temp, original, nc*sizeof(PyArray_UCS4));
-    _unistripw((PyArray_UCS4 *)temp, nc);
+    memcpy(temp, original, nc*sizeof(npy_ucs4));
+    _unistripw((npy_ucs4 *)temp, nc);
     return temp;
 }
 
 static void
 _uni_release(char *ptr, int nc)
 {
-    if (nc*sizeof(PyArray_UCS4) > SMALL_STRING) {
+    if (nc*sizeof(npy_ucs4) > SMALL_STRING) {
         free(ptr);
     }
 }
@@ -927,7 +962,7 @@ _compare_strings(PyArrayObject *result, PyArrayMultiIterObject *multi,
                  int cmp_op, void *func, int rstrip)
 {
     PyArrayIterObject *iself, *iother;
-    Bool *dptr;
+    npy_bool *dptr;
     npy_intp size;
     int val;
     int N1, N2;
@@ -936,7 +971,7 @@ _compare_strings(PyArrayObject *result, PyArrayMultiIterObject *multi,
     char* (*stripfunc)(char *, char *, int);
 
     compfunc = func;
-    dptr = (Bool *)PyArray_DATA(result);
+    dptr = (npy_bool *)PyArray_DATA(result);
     iself = multi->iters[0];
     iother = multi->iters[1];
     size = multi->size;
@@ -1025,8 +1060,8 @@ _strings_richcompare(PyArrayObject *self, PyArrayObject *other, int cmp_op,
         return Py_NotImplemented;
 #else
         PyObject *new;
-        if (PyArray_TYPE(self) == PyArray_STRING &&
-            PyArray_DESCR(other)->type_num == PyArray_UNICODE) {
+        if (PyArray_TYPE(self) == NPY_STRING &&
+            PyArray_DESCR(other)->type_num == NPY_UNICODE) {
             PyArray_Descr* unicode = PyArray_DescrNew(PyArray_DESCR(other));
             unicode->elsize = PyArray_DESCR(self)->elsize << 2;
             new = PyArray_FromAny((PyObject *)self, unicode,
@@ -1037,8 +1072,8 @@ _strings_richcompare(PyArrayObject *self, PyArrayObject *other, int cmp_op,
             Py_INCREF(other);
             self = (PyArrayObject *)new;
         }
-        else if (PyArray_TYPE(self) == PyArray_UNICODE &&
-                 PyArray_DESCR(other)->type_num == PyArray_STRING) {
+        else if (PyArray_TYPE(self) == NPY_UNICODE &&
+                 PyArray_DESCR(other)->type_num == NPY_STRING) {
             PyArray_Descr* unicode = PyArray_DescrNew(PyArray_DESCR(self));
             unicode->elsize = PyArray_DESCR(other)->elsize << 2;
             new = PyArray_FromAny((PyObject *)other, unicode,
@@ -1071,7 +1106,7 @@ _strings_richcompare(PyArrayObject *self, PyArrayObject *other, int cmp_op,
     }
 
     result = (PyArrayObject *)PyArray_NewFromDescr(&PyArray_Type,
-                                  PyArray_DescrFromType(PyArray_BOOL),
+                                  PyArray_DescrFromType(NPY_BOOL),
                                   mit->nd,
                                   mit->dimensions,
                                   NULL, NULL, 0,
@@ -1163,10 +1198,10 @@ _void_compare(PyArrayObject *self, PyArrayObject *other, int cmp_op)
                     newdims.ptr = dimensions;
                     newdims.len = result_ndim+1;
                     memcpy(dimensions, PyArray_DIMS((PyArrayObject *)temp),
-                           sizeof(intp)*result_ndim);
+                           sizeof(npy_intp)*result_ndim);
                     dimensions[result_ndim] = -1;
                     temp2 = PyArray_Newshape((PyArrayObject *)temp,
-                                             &newdims, PyArray_ANYORDER);
+                                             &newdims, NPY_ANYORDER);
                     if (temp2 == NULL) {
                         Py_DECREF(temp);
                         Py_XDECREF(res);
@@ -1178,7 +1213,7 @@ _void_compare(PyArrayObject *self, PyArrayObject *other, int cmp_op)
                 /* Reduce the extra dimension of `temp` using `op` */
                 temp2 = PyArray_GenericReduceFunction((PyArrayObject *)temp,
                                                       op, result_ndim,
-                                                      PyArray_BOOL, NULL);
+                                                      NPY_BOOL, NULL);
                 if (temp2 == NULL) {
                     Py_DECREF(temp);
                     Py_XDECREF(res);
@@ -1241,8 +1276,8 @@ array_richcompare(PyArrayObject *self, PyObject *other, int cmp_op)
             dtype = PyArray_DTYPE(self);
             Py_INCREF(dtype);
         }
-        array_other = (PyArrayObject *)PyArray_FromAny(other, dtype, 0, 0,
-                                                    NPY_ARRAY_ALLOWNA, NULL);
+        array_other = (PyArrayObject *)PyArray_FromAny(other, dtype, 0, 0, 0,
+                                                    NULL);
         /*
          * If not successful, indicate that the items cannot be compared
          * this way.
@@ -1298,8 +1333,8 @@ array_richcompare(PyArrayObject *self, PyObject *other, int cmp_op)
             dtype = PyArray_DTYPE(self);
             Py_INCREF(dtype);
         }
-        array_other = (PyArrayObject *)PyArray_FromAny(other, dtype, 0, 0,
-                                                    NPY_ARRAY_ALLOWNA, NULL);
+        array_other = (PyArrayObject *)PyArray_FromAny(other, dtype, 0, 0, 0,
+                                                    NULL);
         /*
          * If not successful, indicate that the items cannot be compared
          * this way.
@@ -1354,11 +1389,11 @@ array_richcompare(PyArrayObject *self, PyObject *other, int cmp_op)
     }
     if (result == Py_NotImplemented) {
         /* Try to handle string comparisons */
-        if (PyArray_TYPE(self) == PyArray_OBJECT) {
+        if (PyArray_TYPE(self) == NPY_OBJECT) {
             return result;
         }
         array_other = (PyArrayObject *)PyArray_FromObject(other,
-                                                    PyArray_NOTYPE, 0, 0);
+                                                    NPY_NOTYPE, 0, 0);
         if (PyArray_ISSTRING(self) && PyArray_ISSTRING(array_other)) {
             Py_DECREF(result);
             result = _strings_richcompare(self, (PyArrayObject *)
@@ -1415,7 +1450,7 @@ PyArray_ElementStrides(PyObject *obj)
  */
 
 /*NUMPY_API*/
-NPY_NO_EXPORT Bool
+NPY_NO_EXPORT npy_bool
 PyArray_CheckStrides(int elsize, int nd, npy_intp numbytes, npy_intp offset,
                      npy_intp *dims, npy_intp *newstrides)
 {
@@ -1432,10 +1467,10 @@ PyArray_CheckStrides(int elsize, int nd, npy_intp numbytes, npy_intp offset,
     for (i = 0; i < nd; i++) {
         byte_begin = newstrides[i]*(dims[i] - 1);
         if ((byte_begin < begin) || (byte_begin > end)) {
-            return FALSE;
+            return NPY_FALSE;
         }
     }
-    return TRUE;
+    return NPY_TRUE;
 }
 
 
@@ -1449,7 +1484,7 @@ array_new(PyTypeObject *subtype, PyObject *args, PyObject *kwds)
     PyArray_Dims dims = {NULL, 0};
     PyArray_Dims strides = {NULL, 0};
     PyArray_Chunk buffer;
-    longlong offset = 0;
+    npy_longlong offset = 0;
     NPY_ORDER order = NPY_CORDER;
     int is_f_order = 0;
     PyArrayObject *ret;
@@ -1608,7 +1643,7 @@ array_alloc(PyTypeObject *type, Py_ssize_t NPY_UNUSED(nitems))
 {
     PyObject *obj;
     /* nitems will always be 0 */
-    obj = (PyObject *)_pya_malloc(NPY_SIZEOF_PYARRAYOBJECT);
+    obj = (PyObject *)PyArray_malloc(NPY_SIZEOF_PYARRAYOBJECT);
     PyObject_Init(obj, type);
     return obj;
 }

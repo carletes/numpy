@@ -2,9 +2,8 @@
 #include <Python.h>
 #include "structmember.h"
 
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #define _MULTIARRAYMODULE
-#define NPY_NO_PREFIX
 #include "numpy/arrayobject.h"
 #include "numpy/arrayscalars.h"
 
@@ -12,7 +11,7 @@
 
 #include "npy_config.h"
 
-#include "numpy/npy_3kcompat.h"
+#include "npy_pycompat.h"
 
 #include "common.h"
 #include "ctors.h"
@@ -24,7 +23,7 @@
 #include "methods.h"
 #include "_datetime.h"
 #include "datetime_strings.h"
-#include "na_object.h"
+#include "array_assign.h"
 
 /*
  * Reading from a file or a string.
@@ -381,11 +380,10 @@ copy_and_swap(void *dst, void *src, int itemsize, npy_intp numitems,
 /* adapted from Numarray */
 static int
 setArrayFromSequence(PyArrayObject *a, PyObject *s,
-                        int dim, npy_intp offset, npy_intp maskoffset)
+                        int dim, npy_intp offset)
 {
     Py_ssize_t i, slen;
     int res = 0;
-    int a_has_maskna = PyArray_HASMASKNA(a);
 
     /*
      * This code is to ensure that the sequence access below will
@@ -432,8 +430,6 @@ setArrayFromSequence(PyArrayObject *a, PyObject *s,
     /* Broadcast the one element from the sequence to all the outputs */
     if (slen == 1) {
         PyObject *o;
-        NpyNA *na = NULL;
-        char maskvalue = 0;
         npy_intp alen = PyArray_DIM(a, dim);
 
         o = PySequence_GetItem(s, 0);
@@ -441,41 +437,20 @@ setArrayFromSequence(PyArrayObject *a, PyObject *s,
             goto fail;
         }
 
-        /* Check if the value being assigned is NA */
-        if (a_has_maskna) {
-            na = NpyNA_FromObject(o, 1);
-            if (na != NULL) {
-                maskvalue = (char)NpyNA_AsMaskValue(na);
-            }
-            else {
-                maskvalue = 1;
-            }
-        }
-
         for (i = 0; i < alen; i++) {
             if ((PyArray_NDIM(a) - dim) > 1) {
-                res = setArrayFromSequence(a, o, dim+1, offset, maskoffset);
+                res = setArrayFromSequence(a, o, dim+1, offset);
             }
             else {
-                /* Assign a value if it isn't NA */
-                if (na == NULL) {
-                    res = PyArray_DESCR(a)->f->setitem(o,
+                res = PyArray_DESCR(a)->f->setitem(o,
                                         (PyArray_DATA(a) + offset), a);
-                }
-                /* Assign to the mask if a supports MASKNA */
-                if (a_has_maskna) {
-                    *(PyArray_MASKNA_DATA(a) + maskoffset) = maskvalue;
-                }
             }
             if (res < 0) {
                 Py_DECREF(o);
-                Py_XDECREF(na);
                 goto fail;
             }
             offset += PyArray_STRIDES(a)[dim];
-            maskoffset += PyArray_MASKNA_STRIDES(a)[dim];
         }
-        Py_XDECREF(na);
         Py_DECREF(o);
     }
     /* Copy element by element */
@@ -486,38 +461,17 @@ setArrayFromSequence(PyArrayObject *a, PyObject *s,
                 goto fail;
             }
             if ((PyArray_NDIM(a) - dim) > 1) {
-                res = setArrayFromSequence(a, o, dim+1, offset, maskoffset);
+                res = setArrayFromSequence(a, o, dim+1, offset);
             }
             else {
-
-                /* Assignment without an NA mask */
-                if (!a_has_maskna) {
-                    res = PyArray_DESCR(a)->f->setitem(o,
-                                            (PyArray_DATA(a) + offset), a);
-                }
-                /* Assignment with an NA mask */
-                else {
-                    NpyNA *na = NpyNA_FromObject(o, 1);
-                    char maskvalue;
-                    if (na != NULL) {
-                        maskvalue = (char)NpyNA_AsMaskValue(na);
-                        res = 0;
-                    }
-                    else {
-                        maskvalue = 1;
-                        res = PyArray_DESCR(a)->f->setitem(o,
-                                            (PyArray_DATA(a) + offset), a);
-                    }
-
-                    *(PyArray_MASKNA_DATA(a) + maskoffset) = maskvalue;
-                }
+                res = PyArray_DESCR(a)->f->setitem(o,
+                                 (PyArray_DATA(a) + offset), a);
             }
             Py_DECREF(o);
             if (res < 0) {
                 goto fail;
             }
             offset += PyArray_STRIDES(a)[dim];
-            maskoffset += PyArray_MASKNA_STRIDES(a)[dim];
         }
     }
 
@@ -542,7 +496,7 @@ PyArray_AssignFromSequence(PyArrayObject *self, PyObject *v)
                         "assignment to 0-d array");
         return -1;
     }
-    return setArrayFromSequence(self, v, 0, 0, 0);
+    return setArrayFromSequence(self, v, 0, 0);
 }
 
 /*
@@ -556,7 +510,7 @@ discover_itemsize(PyObject *s, int nd, int *itemsize)
     int n, r, i;
 
     if (PyArray_Check(s)) {
-        *itemsize = MAX(*itemsize, PyArray_ITEMSIZE((PyArrayObject *)s));
+        *itemsize = PyArray_MAX(*itemsize, PyArray_ITEMSIZE((PyArrayObject *)s));
         return 0;
     }
 
@@ -574,7 +528,7 @@ discover_itemsize(PyObject *s, int nd, int *itemsize)
             PyErr_Clear();
         }
         else {
-            *itemsize = MAX(*itemsize, n);
+            *itemsize = PyArray_MAX(*itemsize, n);
         }
         return 0;
     }
@@ -632,12 +586,6 @@ discover_dimensions(PyObject *obj, int *maxndim, npy_intp *d, int check_it,
 
     /* obj is a Scalar */
     if (PyArray_IsScalar(obj, Generic)) {
-        *maxndim = 0;
-        return 0;
-    }
-
-    /* obj is an NA */
-    if (NpyNA_Check(obj)) {
         *maxndim = 0;
         return 0;
     }
@@ -918,7 +866,7 @@ PyArray_NewFromDescr(PyTypeObject *subtype, PyArray_Descr *descr, int nd,
             sd = descr->elsize = 1;
         }
         else {
-            sd = descr->elsize = sizeof(PyArray_UCS4);
+            sd = descr->elsize = sizeof(npy_ucs4);
         }
     }
 
@@ -982,8 +930,6 @@ PyArray_NewFromDescr(PyTypeObject *subtype, PyArray_Descr *descr, int nd,
     fa->descr = descr;
     fa->base = (PyObject *)NULL;
     fa->weakreflist = (PyObject *)NULL;
-    fa->maskna_dtype = NULL;
-    fa->maskna_data = NULL;
 
     if (nd > 0) {
         fa->dimensions = PyDimMem_NEW(3*nd);
@@ -992,7 +938,6 @@ PyArray_NewFromDescr(PyTypeObject *subtype, PyArray_Descr *descr, int nd,
             goto fail;
         }
         fa->strides = fa->dimensions + nd;
-        fa->maskna_strides = fa->dimensions + 2 * nd;
         memcpy(fa->dimensions, dims, sizeof(npy_intp)*nd);
         if (strides == NULL) { /* fill it in */
             sd = _array_fill_strides(fa->strides, dims, nd, sd,
@@ -1043,14 +988,6 @@ PyArray_NewFromDescr(PyTypeObject *subtype, PyArray_Descr *descr, int nd,
          * Caller must arrange for this to be reset if truly desired
          */
         fa->flags &= ~NPY_ARRAY_OWNDATA;
-
-        /* Flagging MASKNA is incompatible with providing the data pointer */
-        if (fa->flags & NPY_ARRAY_MASKNA) {
-            PyErr_SetString(PyExc_ValueError,
-                    "Cannot construct a view of data together with the "
-                    "NPY_ARRAY_MASKNA flag, the NA mask must be added later");
-            goto fail;
-        }
     }
     fa->data = data;
 
@@ -1273,7 +1210,7 @@ _array_from_buffer_3118(PyObject *obj, PyObject **out)
         }
     }
     else {
-        descr = PyArray_DescrNewFromType(PyArray_STRING);
+        descr = PyArray_DescrNewFromType(NPY_STRING);
         descr->elsize = view->itemsize;
     }
 
@@ -1311,7 +1248,9 @@ _array_from_buffer_3118(PyObject *obj, PyObject **out)
     r = PyArray_NewFromDescr(&PyArray_Type, descr,
                              nd, shape, strides, view->buf,
                              flags, NULL);
-    ((PyArrayObject_fields *)r)->base = memoryview;
+    if (PyArray_SetBaseObject((PyArrayObject *)r, memoryview) < 0) {
+        goto fail;
+    }
     PyArray_UpdateFlags((PyArrayObject *)r, NPY_ARRAY_UPDATE_ALL);
 
     *out = r;
@@ -1327,31 +1266,76 @@ fail:
 #endif
 }
 
-/*
- * A slight generalization of PyArray_GetArrayParamsFromObject,
- * which also returns whether the input data contains any numpy.NA
- * values.
+/*NUMPY_API
+ * Retrieves the array parameters for viewing/converting an arbitrary
+ * PyObject* to a NumPy array. This allows the "innate type and shape"
+ * of Python list-of-lists to be discovered without
+ * actually converting to an array.
  *
- * This isn't exposed in the public API.
+ * In some cases, such as structured arrays and the __array__ interface,
+ * a data type needs to be used to make sense of the object.  When
+ * this is needed, provide a Descr for 'requested_dtype', otherwise
+ * provide NULL. This reference is not stolen. Also, if the requested
+ * dtype doesn't modify the interpretation of the input, out_dtype will
+ * still get the "innate" dtype of the object, not the dtype passed
+ * in 'requested_dtype'.
+ *
+ * If writing to the value in 'op' is desired, set the boolean
+ * 'writeable' to 1.  This raises an error when 'op' is a scalar, list
+ * of lists, or other non-writeable 'op'.
+ *
+ * Result: When success (0 return value) is returned, either out_arr
+ *         is filled with a non-NULL PyArrayObject and
+ *         the rest of the parameters are untouched, or out_arr is
+ *         filled with NULL, and the rest of the parameters are
+ *         filled.
+ *
+ * Typical usage:
+ *
+ *      PyArrayObject *arr = NULL;
+ *      PyArray_Descr *dtype = NULL;
+ *      int ndim = 0;
+ *      npy_intp dims[NPY_MAXDIMS];
+ *
+ *      if (PyArray_GetArrayParamsFromObject(op, NULL, 1, &dtype,
+ *                                          &ndim, &dims, &arr, NULL) < 0) {
+ *          return NULL;
+ *      }
+ *      if (arr == NULL) {
+ *          ... validate/change dtype, validate flags, ndim, etc ...
+ *          // Could make custom strides here too
+ *          arr = PyArray_NewFromDescr(&PyArray_Type, dtype, ndim,
+ *                                      dims, NULL,
+ *                                      is_f_order ? NPY_ARRAY_F_CONTIGUOUS : 0,
+ *                                      NULL);
+ *          if (arr == NULL) {
+ *              return NULL;
+ *          }
+ *          if (PyArray_CopyObject(arr, op) < 0) {
+ *              Py_DECREF(arr);
+ *              return NULL;
+ *          }
+ *      }
+ *      else {
+ *          ... in this case the other parameters weren't filled, just
+ *              validate and possibly copy arr itself ...
+ *      }
+ *      ... use arr ...
  */
 NPY_NO_EXPORT int
-PyArray_GetArrayParamsFromObjectEx(PyObject *op,
+PyArray_GetArrayParamsFromObject(PyObject *op,
                         PyArray_Descr *requested_dtype,
                         npy_bool writeable,
                         PyArray_Descr **out_dtype,
                         int *out_ndim, npy_intp *out_dims,
-                        int *out_contains_na,
                         PyArrayObject **out_arr, PyObject *context)
 {
     PyObject *tmp;
 
-    *out_contains_na = 0;
-
     /* If op is an array */
     if (PyArray_Check(op)) {
-        if (writeable && !PyArray_ISWRITEABLE((PyArrayObject *)op)) {
-            PyErr_SetString(PyExc_RuntimeError,
-                            "cannot write to array");
+        if (writeable
+            && PyArray_FailUnlessWriteable((PyArrayObject *)op, "array") < 0) {
             return -1;
         }
         Py_INCREF(op);
@@ -1389,40 +1373,11 @@ PyArray_GetArrayParamsFromObjectEx(PyObject *op,
         return 0;
     }
 
-    /* If op is a numpy.NA */
-    if (NpyNA_Check(op)) {
-        NpyNA_fields *fna = (NpyNA_fields *)op;
-
-        if (writeable) {
-            PyErr_SetString(PyExc_RuntimeError,
-                                "cannot write to numpy.NA");
-            return -1;
-        }
-        /* Use the NA's dtype if available */
-        if (fna->dtype != NULL) {
-            *out_dtype = fna->dtype;
-            Py_INCREF(*out_dtype);
-        }
-        /* Otherwise use the default NumPy dtype */
-        else {
-            *out_dtype = PyArray_DescrFromType(NPY_DEFAULT_TYPE);
-            if (*out_dtype == NULL) {
-                return -1;
-            }
-        }
-        *out_ndim = 0;
-        *out_arr = NULL;
-        *out_contains_na = 1;
-        return 0;
-
-    }
-
     /* If op supports the PEP 3118 buffer interface */
     if (!PyBytes_Check(op) && !PyUnicode_Check(op) &&
              _array_from_buffer_3118(op, (PyObject **)out_arr) == 0) {
-        if (writeable && !PyArray_ISWRITEABLE(*out_arr)) {
-            PyErr_SetString(PyExc_RuntimeError,
-                                "cannot write to PEP 3118 buffer");
+        if (writeable
+            && PyArray_FailUnlessWriteable(*out_arr, "PEP 3118 buffer") < 0) {
             Py_DECREF(*out_arr);
             return -1;
         }
@@ -1441,9 +1396,9 @@ PyArray_GetArrayParamsFromObjectEx(PyObject *op,
         }
     }
     if (tmp != Py_NotImplemented) {
-        if (writeable && !PyArray_ISWRITEABLE((PyArrayObject *)tmp)) {
-            PyErr_SetString(PyExc_RuntimeError,
-                                "cannot write to array interface object");
+        if (writeable
+            && PyArray_FailUnlessWriteable((PyArrayObject *)tmp,
+                                           "array interface object") < 0) {
             Py_DECREF(tmp);
             return -1;
         }
@@ -1463,9 +1418,9 @@ PyArray_GetArrayParamsFromObjectEx(PyObject *op,
     if (!writeable) {
         tmp = PyArray_FromArrayAttr(op, requested_dtype, context);
         if (tmp != Py_NotImplemented) {
-            if (writeable && !PyArray_ISWRITEABLE((PyArrayObject *)tmp)) {
-                PyErr_SetString(PyExc_RuntimeError,
-                                    "cannot write to array interface object");
+            if (writeable
+                && PyArray_FailUnlessWriteable((PyArrayObject *)tmp,
+                                               "array interface object") < 0) {
                 Py_DECREF(tmp);
                 return -1;
             }
@@ -1495,8 +1450,7 @@ PyArray_GetArrayParamsFromObjectEx(PyObject *op,
         }
         else {
             *out_dtype = NULL;
-            if (PyArray_DTypeFromObject(op, NPY_MAXDIMS,
-                                    out_contains_na, out_dtype) < 0) {
+            if (PyArray_DTypeFromObject(op, NPY_MAXDIMS, out_dtype) < 0) {
                 if (PyErr_ExceptionMatches(PyExc_MemoryError)) {
                     return -1;
                 }
@@ -1606,89 +1560,6 @@ PyArray_GetArrayParamsFromObjectEx(PyObject *op,
 }
 
 /*NUMPY_API
- * Retrieves the array parameters for viewing/converting an arbitrary
- * PyObject* to a NumPy array. This allows the "innate type and shape"
- * of Python list-of-lists to be discovered without
- * actually converting to an array.
- *
- * In some cases, such as structured arrays and the __array__ interface,
- * a data type needs to be used to make sense of the object.  When
- * this is needed, provide a Descr for 'requested_dtype', otherwise
- * provide NULL. This reference is not stolen. Also, if the requested
- * dtype doesn't modify the interpretation of the input, out_dtype will
- * still get the "innate" dtype of the object, not the dtype passed
- * in 'requested_dtype'.
- *
- * If writing to the value in 'op' is desired, set the boolean
- * 'writeable' to 1.  This raises an error when 'op' is a scalar, list
- * of lists, or other non-writeable 'op'.
- *
- * Result: When success (0 return value) is returned, either out_arr
- *         is filled with a non-NULL PyArrayObject and
- *         the rest of the parameters are untouched, or out_arr is
- *         filled with NULL, and the rest of the parameters are
- *         filled.
- *
- * Typical usage:
- *
- *      PyArrayObject *arr = NULL;
- *      PyArray_Descr *dtype = NULL;
- *      int ndim = 0;
- *      npy_intp dims[NPY_MAXDIMS];
- *
- *      if (PyArray_GetArrayParamsFromObject(op, NULL, 1, &dtype,
- *                                          &ndim, &dims, &arr, NULL) < 0) {
- *          return NULL;
- *      }
- *      if (arr == NULL) {
- *          ... validate/change dtype, validate flags, ndim, etc ...
- *          // Could make custom strides here too
- *          arr = PyArray_NewFromDescr(&PyArray_Type, dtype, ndim,
- *                                      dims, NULL,
- *                                      is_f_order ? NPY_ARRAY_F_CONTIGUOUS : 0,
- *                                      NULL);
- *          if (arr == NULL) {
- *              return NULL;
- *          }
- *          if (PyArray_CopyObject(arr, op) < 0) {
- *              Py_DECREF(arr);
- *              return NULL;
- *          }
- *      }
- *      else {
- *          ... in this case the other parameters weren't filled, just
- *              validate and possibly copy arr itself ...
- *      }
- *      ... use arr ...
- */
-NPY_NO_EXPORT int
-PyArray_GetArrayParamsFromObject(PyObject *op,
-                        PyArray_Descr *requested_dtype,
-                        npy_bool writeable,
-                        PyArray_Descr **out_dtype,
-                        int *out_ndim, npy_intp *out_dims,
-                        PyArrayObject **out_arr, PyObject *context)
-{
-    int contains_na = 0, retcode;
-    retcode = PyArray_GetArrayParamsFromObjectEx(op, requested_dtype,
-                        writeable, out_dtype, out_ndim, out_dims,
-                        &contains_na, out_arr, context);
-
-    /* If NAs were detected, switch to an NPY_OBJECT dtype */
-    if (retcode == 0 && *out_arr == NULL && contains_na) {
-        if ((*out_dtype)->type_num != NPY_OBJECT) {
-            Py_DECREF(*out_dtype);
-            *out_dtype = PyArray_DescrFromType(NPY_OBJECT);
-            if (*out_dtype == NULL) {
-                retcode = -1;
-            }
-        }
-    }
-
-    return retcode;
-}
-
-/*NUMPY_API
  * Does not check for NPY_ARRAY_ENSURECOPY and NPY_ARRAY_NOTSWAPPED in flags
  * Steals a reference to newtype --- which can be NULL
  */
@@ -1702,13 +1573,13 @@ PyArray_FromAny(PyObject *op, PyArray_Descr *newtype, int min_depth,
      */
     PyArrayObject *arr = NULL, *ret;
     PyArray_Descr *dtype = NULL;
-    int ndim = 0, contains_na = 0;
+    int ndim = 0;
     npy_intp dims[NPY_MAXDIMS];
 
     /* Get either the array or its parameters if it isn't an array */
-    if (PyArray_GetArrayParamsFromObjectEx(op, newtype,
+    if (PyArray_GetArrayParamsFromObject(op, newtype,
                         0, &dtype,
-                        &ndim, dims, &contains_na, &arr, context) < 0) {
+                        &ndim, dims, &arr, context) < 0) {
         Py_XDECREF(newtype);
         return NULL;
     }
@@ -1722,14 +1593,6 @@ PyArray_FromAny(PyObject *op, PyArray_Descr *newtype, int min_depth,
 
     /* If we got dimensions and dtype instead of an array */
     if (arr == NULL) {
-        /*
-         * If the input data contains any NAs, and the ALLOWNA flag is
-         * enabled, produce an array with an NA mask.
-         */
-        if (contains_na && (flags & NPY_ARRAY_ALLOWNA) != 0) {
-            flags |= NPY_ARRAY_MASKNA;
-        }
-
         if (flags & NPY_ARRAY_UPDATEIFCOPY) {
             Py_XDECREF(newtype);
             PyErr_SetString(PyExc_TypeError,
@@ -1783,19 +1646,6 @@ PyArray_FromAny(PyObject *op, PyArray_Descr *newtype, int min_depth,
                 Py_DECREF(dtype);
             }
 
-            /*
-             * If there are NAs, but no requested NA support,
-             * switch to NPY_OBJECT. Alternatively - raise an error?
-             */
-            if (contains_na &&
-                    (flags & (NPY_ARRAY_MASKNA | NPY_ARRAY_OWNMASKNA)) == 0) {
-                Py_DECREF(newtype);
-                newtype = PyArray_DescrFromType(NPY_OBJECT);
-                if (newtype == NULL) {
-                    return NULL;
-                }
-            }
-
             /* Create an array and copy the data */
             ret = (PyArrayObject *)PyArray_NewFromDescr(&PyArray_Type, newtype,
                                          ndim, dims,
@@ -1803,28 +1653,6 @@ PyArray_FromAny(PyObject *op, PyArray_Descr *newtype, int min_depth,
                                          flags&NPY_ARRAY_F_CONTIGUOUS, NULL);
             if (ret == NULL) {
                 return NULL;
-            }
-
-            /*
-             * Add an NA mask if requested, or if allowed and the data
-             * has NAs
-             */
-            if ((flags & (NPY_ARRAY_MASKNA | NPY_ARRAY_OWNMASKNA)) != 0) {
-                if (PyArray_AllocateMaskNA(ret,
-                                (flags&NPY_ARRAY_OWNMASKNA) != 0, 0, 1) < 0) {
-                    Py_DECREF(ret);
-                    return NULL;
-                }
-
-                /* Special case assigning a single NA */
-                if (ndim == 0) {
-                    NpyNA *na = NpyNA_FromObject(op, 1);
-                    if (na != NULL) {
-                        PyArray_MASKNA_DATA(ret)[0] =
-                                        (char)NpyNA_AsMaskValue(na);
-                        return (PyObject *)ret;
-                    }
-                }
             }
 
             if (ndim > 0) {
@@ -1990,6 +1818,7 @@ PyArray_FromArray(PyArrayObject *arr, PyArray_Descr *newtype, int flags)
                 PyUString_FromFormat(" according to the rule %s",
                         npy_casting_to_string(casting)));
         PyErr_SetObject(PyExc_TypeError, errmsg);
+        Py_DECREF(errmsg);
 
         Py_DECREF(newtype);
         return NULL;
@@ -2014,11 +1843,6 @@ PyArray_FromArray(PyArrayObject *arr, PyArray_Descr *newtype, int flags)
            /* If a writeable array was requested, and arr is not */
            ((flags & NPY_ARRAY_WRITEABLE) &&
                    (!(arrflags & NPY_ARRAY_WRITEABLE))) ||
-           /* If an array with no NA mask was requested, and arr has one */
-           ((flags & (NPY_ARRAY_ALLOWNA |
-                      NPY_ARRAY_MASKNA |
-                      NPY_ARRAY_OWNMASKNA)) == 0 &&
-                   (arrflags & NPY_ARRAY_MASKNA)) ||
            !PyArray_EquivTypes(oldtype, newtype);
 
     if (copy) {
@@ -2033,13 +1857,6 @@ PyArray_FromArray(PyArrayObject *arr, PyArray_Descr *newtype, int flags)
             order = NPY_CORDER;
         }
 
-        if ((flags & NPY_ARRAY_UPDATEIFCOPY) &&
-                            (!PyArray_ISWRITEABLE(arr))) {
-            Py_DECREF(newtype);
-            PyErr_SetString(PyExc_ValueError,
-                    "cannot copy back to a read-only array");
-            return NULL;
-        }
         if ((flags & NPY_ARRAY_ENSUREARRAY)) {
             subok = 0;
         }
@@ -2049,44 +1866,17 @@ PyArray_FromArray(PyArrayObject *arr, PyArray_Descr *newtype, int flags)
             return NULL;
         }
 
-        /*
-         * Allocate an NA mask if necessary from the input,
-         * is NAs are being allowed.
-         */
-        if ((arrflags & NPY_ARRAY_MASKNA) && (flags & NPY_ARRAY_ALLOWNA)) {
-            if (PyArray_AllocateMaskNA(ret, 1, 0, 1) < 0) {
-                Py_DECREF(ret);
-                return NULL;
-            }
-        }
-
-        /*
-         * If a ALLOWNA was not enabled, and 'arr' has an NA mask,
-         * this will raise an error if 'arr' contains any NA values.
-         */
         if (PyArray_CopyInto(ret, arr) < 0) {
             Py_DECREF(ret);
             return NULL;
         }
 
-        /* Allocate an NA mask if requested but wasn't from the input */
-        if ((flags & (NPY_ARRAY_MASKNA | NPY_ARRAY_OWNMASKNA)) != 0 &&
-                            !PyArray_HASMASKNA(ret)) {
-            if (PyArray_AllocateMaskNA(ret, 1, 0, 1) < 0) {
+        if (flags & NPY_ARRAY_UPDATEIFCOPY)  {
+            Py_INCREF(arr);
+            if (PyArray_SetUpdateIfCopyBase(ret, arr) < 0) {
                 Py_DECREF(ret);
                 return NULL;
             }
-        }
-
-        if (flags & NPY_ARRAY_UPDATEIFCOPY)  {
-            /*
-             * Don't use PyArray_SetBaseObject, because that compresses
-             * the chain of bases.
-             */
-            Py_INCREF(arr);
-            ((PyArrayObject_fields *)ret)->base = (PyObject *)arr;
-            PyArray_ENABLEFLAGS(ret, NPY_ARRAY_UPDATEIFCOPY);
-            PyArray_CLEARFLAGS(arr, NPY_ARRAY_WRITEABLE);
         }
     }
     /*
@@ -2095,11 +1885,7 @@ PyArray_FromArray(PyArrayObject *arr, PyArray_Descr *newtype, int flags)
      */
     else {
         int needview = ((flags & NPY_ARRAY_ENSUREARRAY) &&
-                            !PyArray_CheckExact(arr)) ||
-                       ((flags & NPY_ARRAY_MASKNA) &&
-                            !(arrflags & NPY_ARRAY_MASKNA)) ||
-                       ((flags & NPY_ARRAY_OWNMASKNA) &&
-                            !(arrflags & NPY_ARRAY_OWNMASKNA));
+                        !PyArray_CheckExact(arr));
 
         Py_DECREF(newtype);
         if (needview) {
@@ -2114,14 +1900,6 @@ PyArray_FromArray(PyArrayObject *arr, PyArray_Descr *newtype, int flags)
             ret = (PyArrayObject *)PyArray_View(arr, NULL, subtype);
             if (ret == NULL) {
                 return NULL;
-            }
-
-            if (flags & (NPY_ARRAY_MASKNA | NPY_ARRAY_OWNMASKNA)) {
-                int ownmaskna = (flags & NPY_ARRAY_OWNMASKNA) != 0;
-                if (PyArray_AllocateMaskNA(ret, ownmaskna, 0, 1) < 0) {
-                    Py_DECREF(ret);
-                    return NULL;
-                }
             }
         }
         else {
@@ -2142,7 +1920,7 @@ PyArray_FromStructInterface(PyObject *input)
     PyArrayInterface *inter;
     PyObject *attr;
     PyArrayObject *ret;
-    char endian = PyArray_NATBYTE;
+    char endian = NPY_NATBYTE;
 
     attr = PyObject_GetAttrString(input, "__array_struct__");
     if (attr == NULL) {
@@ -2161,8 +1939,8 @@ PyArray_FromStructInterface(PyObject *input)
         inter->flags &= ~NPY_ARRAY_NOTSWAPPED;
     }
 
-    if (inter->flags & ARR_HAS_DESCR) {
-        if (PyArray_DescrConverter(inter->descr, &thetype) == PY_FAIL) {
+    if (inter->flags & NPY_ARR_HAS_DESCR) {
+        if (PyArray_DescrConverter(inter->descr, &thetype) == NPY_FAIL) {
             thetype = NULL;
             PyErr_Clear();
         }
@@ -2200,90 +1978,117 @@ PyArray_FromStructInterface(PyObject *input)
 
 /*NUMPY_API*/
 NPY_NO_EXPORT PyObject *
-PyArray_FromInterface(PyObject *input)
+PyArray_FromInterface(PyObject *origin)
 {
-    PyObject *attr = NULL, *item = NULL;
-    PyObject *tstr = NULL, *shape = NULL;
-    PyObject *inter = NULL;
+    PyObject *tmp = NULL;
+    PyObject *iface = NULL;
+    PyObject *attr = NULL;
     PyObject *base = NULL;
     PyArrayObject *ret;
-    PyArray_Descr *type=NULL;
-    char *data;
+    PyArray_Descr *dtype = NULL;
+    char *data = NULL;
     Py_ssize_t buffer_len;
     int res, i, n;
-    intp dims[NPY_MAXDIMS], strides[NPY_MAXDIMS];
+    npy_intp dims[NPY_MAXDIMS], strides[NPY_MAXDIMS];
     int dataflags = NPY_ARRAY_BEHAVED;
 
-    /* Get the memory from __array_data__ and __array_offset__ */
-    /* Get the shape */
     /* Get the typestring -- ignore array_descr */
+    /* Get the shape */
+    /* Get the memory from __array_data__ and __array_offset__ */
     /* Get the strides */
 
-    inter = PyObject_GetAttrString(input, "__array_interface__");
-    if (inter == NULL) {
+    iface = PyObject_GetAttrString(origin, "__array_interface__");
+    if (iface == NULL) {
         PyErr_Clear();
         return Py_NotImplemented;
     }
-    if (!PyDict_Check(inter)) {
-        Py_DECREF(inter);
+    if (!PyDict_Check(iface)) {
+        Py_DECREF(iface);
         PyErr_SetString(PyExc_ValueError,
                 "Invalid __array_interface__ value, must be a dict");
         return NULL;
     }
-    shape = PyDict_GetItemString(inter, "shape");
-    if (shape == NULL) {
-        Py_DECREF(inter);
-        PyErr_SetString(PyExc_ValueError,
-                "Missing __array_interface__ shape");
-        return NULL;
-    }
-    tstr = PyDict_GetItemString(inter, "typestr");
-    if (tstr == NULL) {
-        Py_DECREF(inter);
+
+    /* Get type string from interface specification */
+    attr = PyDict_GetItemString(iface, "typestr");
+    if (attr == NULL) {
+        Py_DECREF(iface);
         PyErr_SetString(PyExc_ValueError,
                 "Missing __array_interface__ typestr");
         return NULL;
     }
-
-    attr = PyDict_GetItemString(inter, "data");
-    base = input;
-    if ((attr == NULL) || (attr==Py_None) || (!PyTuple_Check(attr))) {
-        if (attr && (attr != Py_None)) {
-            item = attr;
-        }
-        else {
-            item = input;
-        }
-        res = PyObject_AsWriteBuffer(item, (void **)&data, &buffer_len);
-        if (res < 0) {
-            PyErr_Clear();
-            res = PyObject_AsReadBuffer(
-                        item, (const void **)&data, &buffer_len);
-            if (res < 0) {
-                goto fail;
-            }
-            dataflags &= ~NPY_ARRAY_WRITEABLE;
-        }
-        attr = PyDict_GetItemString(inter, "offset");
-        if (attr) {
-            longlong num = PyLong_AsLongLong(attr);
-            if (error_converting(num)) {
-                PyErr_SetString(PyExc_TypeError,
-                                "__array_interface__ offset "
-                                "must be an integer");
-                goto fail;
-            }
-            data += num;
-        }
-        base = item;
+#if defined(NPY_PY3K)
+    /* Allow unicode type strings */
+    if (PyUnicode_Check(attr)) {
+        tmp = PyUnicode_AsASCIIString(attr);
+        attr = tmp;
     }
+#endif
+    if (!PyBytes_Check(attr)) {
+        PyErr_SetString(PyExc_TypeError,
+                    "__array_interface__ typestr must be a string");
+        goto fail;
+    }
+    /* Get dtype from type string */
+    dtype = _array_typedescr_fromstr(PyString_AS_STRING(attr));
+#if defined(NPY_PY3K)
+    if (tmp == attr) {
+        Py_DECREF(tmp);
+    }
+#endif
+    if (dtype == NULL) {
+        goto fail;
+    }
+
+    /* Get shape tuple from interface specification */
+    attr = PyDict_GetItemString(iface, "shape");
+    if (attr == NULL) {
+        /* Shape must be specified when 'data' is specified */
+        if (PyDict_GetItemString(iface, "data") != NULL) {
+            Py_DECREF(iface);
+            PyErr_SetString(PyExc_ValueError,
+                    "Missing __array_interface__ shape");
+            return NULL;
+        }
+        /* Assume shape as scalar otherwise */
+        else {
+            /* NOTE: pointers to data and base should be NULL */
+            n = dims[0] = 0;
+        }
+    }
+    /* Make sure 'shape' is a tuple */
+    else if (!PyTuple_Check(attr)) {
+        PyErr_SetString(PyExc_TypeError,
+                "shape must be a tuple");
+        goto fail;
+    }
+    /* Get dimensions from shape tuple */
     else {
+        n = PyTuple_GET_SIZE(attr);
+        for (i = 0; i < n; i++) {
+            tmp = PyTuple_GET_ITEM(attr, i);
+            dims[i] = PyArray_PyIntAsIntp(tmp);
+            if (error_converting(dims[i])) {
+                goto fail;
+            }
+        }
+    }
+
+    /* Get data buffer from interface specification */
+    attr = PyDict_GetItemString(iface, "data");
+
+    /* Case for data access through pointer */
+    if (attr && PyTuple_Check(attr)) {
         PyObject *dataptr;
+        if (n == 0) {
+            PyErr_SetString(PyExc_ValueError,
+                    "__array_interface__ shape must be at least size 1");
+            goto fail;
+        }
         if (PyTuple_GET_SIZE(attr) != 2) {
             PyErr_SetString(PyExc_TypeError,
-                            "__array_interface__ data must be " \
-                            "a 2-tuple with (data pointer "\
-                            "integer, read-only flag)");
+                    "__array_interface__ data must be a 2-tuple with "
+                    "(data pointer integer, read-only flag)");
             goto fail;
         }
         dataptr = PyTuple_GET_ITEM(attr, 0);
@@ -2292,8 +2097,7 @@ PyArray_FromInterface(PyObject *input)
                          "%p", (void **)&data);
             if (res < 1) {
                 PyErr_SetString(PyExc_TypeError,
-                                "__array_interface__ data string cannot be " \
-                                "converted");
+                        "__array_interface__ data string cannot be converted");
                 goto fail;
             }
         }
@@ -2301,98 +2105,110 @@ PyArray_FromInterface(PyObject *input)
             data = PyLong_AsVoidPtr(dataptr);
         }
         else {
-            PyErr_SetString(PyExc_TypeError, "first element "
-                            "of __array_interface__ data tuple "
-                            "must be integer or string.");
+            PyErr_SetString(PyExc_TypeError,
+                    "first element of __array_interface__ data tuple "
+                    "must be integer or string.");
             goto fail;
         }
         if (PyObject_IsTrue(PyTuple_GET_ITEM(attr,1))) {
             dataflags &= ~NPY_ARRAY_WRITEABLE;
         }
+        base = origin;
     }
-    attr = tstr;
-#if defined(NPY_PY3K)
-    if (PyUnicode_Check(tstr)) {
-        /* Allow unicode type strings */
-        attr = PyUnicode_AsASCIIString(tstr);
-    }
-#endif
-    if (!PyBytes_Check(attr)) {
-        PyErr_SetString(PyExc_TypeError,
-                    "__array_interface__ typestr must be a string");
-        goto fail;
-    }
-    type = _array_typedescr_fromstr(PyString_AS_STRING(attr));
-#if defined(NPY_PY3K)
-    if (attr != tstr) {
-        Py_DECREF(attr);
-    }
-#endif
-    if (type == NULL) {
-        goto fail;
-    }
-    attr = shape;
-    if (!PyTuple_Check(attr)) {
-        PyErr_SetString(PyExc_TypeError, "shape must be a tuple");
-        Py_DECREF(type);
-        goto fail;
-    }
-    n = PyTuple_GET_SIZE(attr);
-    for (i = 0; i < n; i++) {
-        item = PyTuple_GET_ITEM(attr, i);
-        dims[i] = PyArray_PyIntAsIntp(item);
-        if (error_converting(dims[i])) {
-            break;
+
+    /* Case for data access through buffer */
+    else if (attr) {
+        if (n == 0) {
+            PyErr_SetString(PyExc_ValueError,
+                    "__array_interface__ shape must be at least size 1");
+            goto fail;
+        }
+        if (attr && (attr != Py_None)) {
+            base = attr;
+        }
+        else {
+            base = origin;
+        }
+        res = PyObject_AsWriteBuffer(base, (void **)&data, &buffer_len);
+        if (res < 0) {
+            PyErr_Clear();
+            res = PyObject_AsReadBuffer(
+                        base, (const void **)&data, &buffer_len);
+            if (res < 0) {
+                goto fail;
+            }
+            dataflags &= ~NPY_ARRAY_WRITEABLE;
+        }
+        /* Get offset number from interface specification */
+        attr = PyDict_GetItemString(origin, "offset");
+        if (attr) {
+            npy_longlong num = PyLong_AsLongLong(attr);
+            if (error_converting(num)) {
+                PyErr_SetString(PyExc_TypeError,
+                        "__array_interface__ offset must be an integer");
+                goto fail;
+            }
+            data += num;
         }
     }
 
-    ret = (PyArrayObject *)PyArray_NewFromDescr(&PyArray_Type, type,
+    ret = (PyArrayObject *)PyArray_NewFromDescr(&PyArray_Type, dtype,
                                                 n, dims,
                                                 NULL, data,
                                                 dataflags, NULL);
     if (ret == NULL) {
-        return NULL;
+        goto fail;
     }
-    Py_INCREF(base);
-    if (PyArray_SetBaseObject(ret, base) < 0) {
-        Py_DECREF(ret);
-        return NULL;
+    if (data == NULL) {
+        if (PyArray_SIZE(ret) > 1) {
+            PyErr_SetString(PyExc_ValueError,
+                    "cannot coerce scalar to array with size > 1");
+            Py_DECREF(ret);
+            goto fail;
+        }
+        if (PyArray_SETITEM(ret, PyArray_DATA(ret), origin) < 0) {
+            Py_DECREF(ret);
+            goto fail;
+        }
     }
-
-    attr = PyDict_GetItemString(inter, "strides");
+    if (base) {
+        Py_INCREF(base);
+        if (PyArray_SetBaseObject(ret, base) < 0) {
+            Py_DECREF(ret);
+            goto fail;
+        }
+    }
+    attr = PyDict_GetItemString(iface, "strides");
     if (attr != NULL && attr != Py_None) {
         if (!PyTuple_Check(attr)) {
             PyErr_SetString(PyExc_TypeError,
-                            "strides must be a tuple");
+                    "strides must be a tuple");
             Py_DECREF(ret);
-            return NULL;
+            goto fail;
         }
         if (n != PyTuple_GET_SIZE(attr)) {
             PyErr_SetString(PyExc_ValueError,
-                            "mismatch in length of "\
-                            "strides and shape");
+                    "mismatch in length of strides and shape");
             Py_DECREF(ret);
-            return NULL;
+            goto fail;
         }
         for (i = 0; i < n; i++) {
-            item = PyTuple_GET_ITEM(attr, i);
-            strides[i] = PyArray_PyIntAsIntp(item);
+            tmp = PyTuple_GET_ITEM(attr, i);
+            strides[i] = PyArray_PyIntAsIntp(tmp);
             if (error_converting(strides[i])) {
-                break;
+                Py_DECREF(ret);
+                goto fail;
             }
-        }
-        if (PyErr_Occurred()) {
-            PyErr_Clear();
         }
         memcpy(PyArray_STRIDES(ret), strides, n*sizeof(npy_intp));
     }
-    else PyErr_Clear();
     PyArray_UpdateFlags(ret, NPY_ARRAY_UPDATE_ALL);
-    Py_DECREF(inter);
+    Py_DECREF(iface);
     return (PyObject *)ret;
 
  fail:
-    Py_XDECREF(inter);
+    Py_XDECREF(dtype);
+    Py_XDECREF(iface);
     return NULL;
 }
 
@@ -2453,20 +2269,15 @@ NPY_NO_EXPORT PyArray_Descr *
 PyArray_DescrFromObject(PyObject *op, PyArray_Descr *mintype)
 {
     PyArray_Descr *dtype;
-    int contains_na = 0;
 
     dtype = mintype;
     Py_XINCREF(dtype);
 
-    if (PyArray_DTypeFromObject(op, NPY_MAXDIMS, &contains_na, &dtype) < 0) {
+    if (PyArray_DTypeFromObject(op, NPY_MAXDIMS, &dtype) < 0) {
         return NULL;
     }
 
-    if (contains_na) {
-        Py_XDECREF(dtype);
-        return PyArray_DescrFromType(NPY_OBJECT);
-    }
-    else if (dtype == NULL) {
+    if (dtype == NULL) {
         return PyArray_DescrFromType(NPY_DEFAULT_TYPE);
     }
     else {
@@ -2581,31 +2392,24 @@ NPY_NO_EXPORT int
 PyArray_CopyAsFlat(PyArrayObject *dst, PyArrayObject *src, NPY_ORDER order)
 {
     PyArray_StridedUnaryOp *stransfer = NULL;
-    PyArray_MaskedStridedUnaryOp *maskedstransfer = NULL;
     NpyAuxData *transferdata = NULL;
-    PyArray_StridedUnaryOp *maskna_stransfer = NULL;
-    NpyAuxData *maskna_transferdata = NULL;
     NpyIter *dst_iter, *src_iter;
 
     NpyIter_IterNextFunc *dst_iternext, *src_iternext;
     char **dst_dataptr, **src_dataptr;
     npy_intp dst_stride, src_stride;
-    npy_intp maskna_src_stride = 0, maskna_dst_stride = 0;
     npy_intp *dst_countptr, *src_countptr;
     npy_uint32 baseflags;
 
     char *dst_data, *src_data;
-    char *maskna_dst_data = NULL, *maskna_src_data = NULL;
     npy_intp dst_count, src_count, count;
-    npy_intp src_itemsize, maskna_src_itemsize = 0;
+    npy_intp src_itemsize;
     npy_intp dst_size, src_size;
-    int needs_api, use_maskna = 0;
+    int needs_api;
 
     NPY_BEGIN_THREADS_DEF;
 
-    if (!PyArray_ISWRITEABLE(dst)) {
-        PyErr_SetString(PyExc_RuntimeError,
-                "cannot write to array");
+    if (PyArray_FailUnlessWriteable(dst, "destination array") < 0) {
         return -1;
     }
 
@@ -2637,41 +2441,6 @@ PyArray_CopyAsFlat(PyArrayObject *dst, PyArrayObject *src, NPY_ORDER order)
     baseflags = NPY_ITER_EXTERNAL_LOOP |
                 NPY_ITER_DONT_NEGATE_STRIDES |
                 NPY_ITER_REFS_OK;
-
-    /*
-     * If 'src' has a mask, and 'dst' doesn't, need to validate that
-     * 'src' has everything exposed. Otherwise, the mask needs to
-     * be copied as well.
-     */
-    if (PyArray_HASMASKNA(src)) {
-        if (PyArray_HASMASKNA(dst)) {
-            use_maskna = 1;
-            baseflags |= NPY_ITER_USE_MASKNA;
-        }
-        else {
-            int containsna = PyArray_ContainsNA(src, NULL, NULL);
-            if (containsna == -1) {
-                return -1;
-            }
-            else if (containsna) {
-                PyErr_SetString(PyExc_ValueError,
-                        "Cannot assign NA to an array which "
-                        "does not support NAs");
-                return -1;
-            }
-            baseflags |= NPY_ITER_IGNORE_MASKNA;
-        }
-    }
-    /*
-     * If 'dst' has a mask but 'src' doesn't, set all of 'dst'
-     * to be exposed, then proceed without worrying about the mask.
-     */
-    else if (PyArray_HASMASKNA(dst)) {
-        if (PyArray_AssignMaskNA(dst, 1, NULL, 0, NULL) < 0) {
-            return -1;
-        }
-        baseflags |= NPY_ITER_IGNORE_MASKNA;
-    }
 
     /*
      * This copy is based on matching C-order traversals of src and dst.
@@ -2708,12 +2477,6 @@ PyArray_CopyAsFlat(PyArrayObject *dst, PyArrayObject *src, NPY_ORDER order)
     src_countptr = NpyIter_GetInnerLoopSizePtr(src_iter);
     src_itemsize = PyArray_DESCR(src)->elsize;
 
-    if (use_maskna) {
-        maskna_src_stride = NpyIter_GetInnerStrideArray(src_iter)[1];
-        maskna_dst_stride = NpyIter_GetInnerStrideArray(dst_iter)[1];
-        maskna_src_itemsize = PyArray_MASKNA_DTYPE(src)->elsize;
-    }
-
     if (dst_iternext == NULL || src_iternext == NULL) {
         NpyIter_Deallocate(dst_iter);
         NpyIter_Deallocate(src_iter);
@@ -2729,48 +2492,16 @@ PyArray_CopyAsFlat(PyArrayObject *dst, PyArrayObject *src, NPY_ORDER order)
      * we can pass them to this function to take advantage of
      * contiguous strides, etc.
      */
-    if (!use_maskna) {
-        if (PyArray_GetDTypeTransferFunction(
-                        PyArray_ISALIGNED(src) && PyArray_ISALIGNED(dst),
-                        src_stride, dst_stride,
-                        PyArray_DESCR(src), PyArray_DESCR(dst),
-                        0,
-                        &stransfer, &transferdata,
-                        &needs_api) != NPY_SUCCEED) {
-            NpyIter_Deallocate(dst_iter);
-            NpyIter_Deallocate(src_iter);
-            return -1;
-        }
-    }
-    else {
-        if (PyArray_GetMaskedDTypeTransferFunction(
-                        PyArray_ISALIGNED(src) && PyArray_ISALIGNED(dst),
-                        src_stride,
-                        dst_stride,
-                        maskna_src_stride,
-                        PyArray_DESCR(src),
-                        PyArray_DESCR(dst),
-                        PyArray_MASKNA_DTYPE(src),
-                        0,
-                        &maskedstransfer, &transferdata,
-                        &needs_api) != NPY_SUCCEED) {
-            NpyIter_Deallocate(dst_iter);
-            NpyIter_Deallocate(src_iter);
-            return -1;
-        }
-
-        /* Also need a transfer function for the mask itself */
-        if (PyArray_GetDTypeTransferFunction(1,
-                        maskna_src_stride, maskna_dst_stride,
-                        PyArray_MASKNA_DTYPE(src), PyArray_MASKNA_DTYPE(dst),
-                        0,
-                        &maskna_stransfer, &maskna_transferdata,
-                        &needs_api) != NPY_SUCCEED) {
-            NPY_AUXDATA_FREE(transferdata);
-            NpyIter_Deallocate(dst_iter);
-            NpyIter_Deallocate(src_iter);
-            return -1;
-        }
+    if (PyArray_GetDTypeTransferFunction(
+                    PyArray_ISALIGNED(src) && PyArray_ISALIGNED(dst),
+                    src_stride, dst_stride,
+                    PyArray_DESCR(src), PyArray_DESCR(dst),
+                    0,
+                    &stransfer, &transferdata,
+                    &needs_api) != NPY_SUCCEED) {
+        NpyIter_Deallocate(dst_iter);
+        NpyIter_Deallocate(src_iter);
+        return -1;
     }
 
     if (!needs_api) {
@@ -2781,88 +2512,37 @@ PyArray_CopyAsFlat(PyArrayObject *dst, PyArrayObject *src, NPY_ORDER order)
     src_count = *src_countptr;
     dst_data = dst_dataptr[0];
     src_data = src_dataptr[0];
-    /*
-     * The tests did not trigger this code, so added a new function
-     * ndarray.setasflat to the Python exposure in order to test it.
-     */
-    if (!use_maskna) {
-        for(;;) {
-            /* Transfer the biggest amount that fits both */
-            count = (src_count < dst_count) ? src_count : dst_count;
-            stransfer(dst_data, dst_stride,
-                        src_data, src_stride,
-                        count, src_itemsize, transferdata);
+    for(;;) {
+        /* Transfer the biggest amount that fits both */
+        count = (src_count < dst_count) ? src_count : dst_count;
+        stransfer(dst_data, dst_stride,
+                    src_data, src_stride,
+                    count, src_itemsize, transferdata);
 
-            /* If we exhausted the dst block, refresh it */
-            if (dst_count == count) {
-                if (!dst_iternext(dst_iter)) {
-                    break;
-                }
-                dst_count = *dst_countptr;
-                dst_data = dst_dataptr[0];
+        /* If we exhausted the dst block, refresh it */
+        if (dst_count == count) {
+            if (!dst_iternext(dst_iter)) {
+                break;
             }
-            else {
-                dst_count -= count;
-                dst_data += count*dst_stride;
-            }
-
-            /* If we exhausted the src block, refresh it */
-            if (src_count == count) {
-                if (!src_iternext(src_iter)) {
-                    break;
-                }
-                src_count = *src_countptr;
-                src_data = src_dataptr[0];
-            }
-            else {
-                src_count -= count;
-                src_data += count*src_stride;
-            }
+            dst_count = *dst_countptr;
+            dst_data = dst_dataptr[0];
         }
-    }
-    else {
-        maskna_src_data = src_dataptr[1];
-        maskna_dst_data = dst_dataptr[1];
-        for(;;) {
-            /* Transfer the biggest amount that fits both */
-            count = (src_count < dst_count) ? src_count : dst_count;
-            maskedstransfer(dst_data, dst_stride,
-                        src_data, src_stride,
-                        (npy_mask *)maskna_src_data, maskna_src_stride,
-                        count, src_itemsize, transferdata);
-            maskna_stransfer(maskna_dst_data, maskna_dst_stride,
-                        maskna_src_data, maskna_src_stride,
-                        count, maskna_src_itemsize, maskna_transferdata);
+        else {
+            dst_count -= count;
+            dst_data += count*dst_stride;
+        }
 
-            /* If we exhausted the dst block, refresh it */
-            if (dst_count == count) {
-                if (!dst_iternext(dst_iter)) {
-                    break;
-                }
-                dst_count = *dst_countptr;
-                dst_data = dst_dataptr[0];
-                maskna_dst_data = dst_dataptr[1];
+        /* If we exhausted the src block, refresh it */
+        if (src_count == count) {
+            if (!src_iternext(src_iter)) {
+                break;
             }
-            else {
-                dst_count -= count;
-                dst_data += count*dst_stride;
-                maskna_dst_data += count*maskna_dst_stride;
-            }
-
-            /* If we exhausted the src block, refresh it */
-            if (src_count == count) {
-                if (!src_iternext(src_iter)) {
-                    break;
-                }
-                src_count = *src_countptr;
-                src_data = src_dataptr[0];
-                maskna_src_data = src_dataptr[1];
-            }
-            else {
-                src_count -= count;
-                src_data += count*src_stride;
-                maskna_src_data += count*maskna_src_stride;
-            }
+            src_count = *src_countptr;
+            src_data = src_dataptr[0];
+        }
+        else {
+            src_count -= count;
+            src_data += count*src_stride;
         }
     }
 
@@ -2871,7 +2551,6 @@ PyArray_CopyAsFlat(PyArrayObject *dst, PyArrayObject *src, NPY_ORDER order)
     }
 
     NPY_AUXDATA_FREE(transferdata);
-    NPY_AUXDATA_FREE(maskna_transferdata);
     NpyIter_Deallocate(dst_iter);
     NpyIter_Deallocate(src_iter);
 
@@ -2904,7 +2583,7 @@ PyArray_CopyAnyInto(PyArrayObject *dst, PyArrayObject *src)
 NPY_NO_EXPORT int
 PyArray_CopyInto(PyArrayObject *dst, PyArrayObject *src)
 {
-    return PyArray_AssignArray(dst, src, NULL, NPY_UNSAFE_CASTING, 0, NULL);
+    return PyArray_AssignArray(dst, src, NULL, NPY_UNSAFE_CASTING);
 }
 
 /*NUMPY_API
@@ -2915,7 +2594,7 @@ PyArray_CopyInto(PyArrayObject *dst, PyArrayObject *src)
 NPY_NO_EXPORT int
 PyArray_MoveInto(PyArrayObject *dst, PyArrayObject *src)
 {
-    return PyArray_AssignArray(dst, src, NULL, NPY_UNSAFE_CASTING, 0, NULL);
+    return PyArray_AssignArray(dst, src, NULL, NPY_UNSAFE_CASTING);
 }
 
 /*NUMPY_API
@@ -2929,6 +2608,7 @@ PyArray_CheckAxis(PyArrayObject *arr, int *axis, int flags)
 {
     PyObject *temp1, *temp2;
     int n = PyArray_NDIM(arr);
+    int axis_orig = *axis;
 
     if (*axis == NPY_MAXDIMS || n == 0) {
         if (n != 1) {
@@ -2971,7 +2651,7 @@ PyArray_CheckAxis(PyArrayObject *arr, int *axis, int flags)
     }
     if ((*axis < 0) || (*axis >= n)) {
         PyErr_Format(PyExc_ValueError,
-                     "axis(=%d) out of bounds", *axis);
+                     "axis(=%d) out of bounds", axis_orig);
         Py_DECREF(temp2);
         return NULL;
     }
@@ -3110,7 +2790,8 @@ PyArray_Arange(double start, double stop, double step, int type_num)
         return (PyObject *)range;
     }
     if (!funcs->fill) {
-        PyErr_SetString(PyExc_ValueError, "no fill-function for data-type.");
+        PyErr_SetString(PyExc_ValueError,
+                "no fill-function for data-type.");
         Py_DECREF(range);
         return NULL;
     }
@@ -3173,7 +2854,7 @@ _calc_length(PyObject *start, PyObject *stop, PyObject *step, PyObject **next, i
                     "arange: overflow while computing length");
             return -1;
         }
-        len = MIN(len, tmp);
+        len = PyArray_MIN(len, tmp);
     }
     else {
         value = PyFloat_AsDouble(val);
@@ -3224,19 +2905,29 @@ PyArray_ArangeObj(PyObject *start, PyObject *stop, PyObject *step, PyArray_Descr
     if (!dtype) {
         PyArray_Descr *deftype;
         PyArray_Descr *newtype;
-        /* intentionally made to be PyArray_LONG default */
-        deftype = PyArray_DescrFromType(PyArray_LONG);
+
+        /* intentionally made to be at least NPY_LONG */
+        deftype = PyArray_DescrFromType(NPY_LONG);
         newtype = PyArray_DescrFromObject(start, deftype);
         Py_DECREF(deftype);
+        if (newtype == NULL) {
+            return NULL;
+        }
         deftype = newtype;
         if (stop && stop != Py_None) {
             newtype = PyArray_DescrFromObject(stop, deftype);
             Py_DECREF(deftype);
+            if (newtype == NULL) {
+                return NULL;
+            }
             deftype = newtype;
         }
         if (step && step != Py_None) {
             newtype = PyArray_DescrFromObject(step, deftype);
             Py_DECREF(deftype);
+            if (newtype == NULL) {
+                return NULL;
+            }
             deftype = newtype;
         }
         dtype = deftype;
@@ -3281,7 +2972,7 @@ PyArray_ArangeObj(PyObject *start, PyObject *stop, PyObject *step, PyArray_Descr
      * order version.  And then swap on the way out.
      */
     if (!PyArray_ISNBO(dtype->byteorder)) {
-        native = PyArray_DescrNewByteorder(dtype, PyArray_NATBYTE);
+        native = PyArray_DescrNewByteorder(dtype, NPY_NATBYTE);
         swap = 1;
     }
     else {
@@ -3351,41 +3042,21 @@ array_fromfile_binary(FILE *fp, PyArray_Descr *dtype, npy_intp num, size_t *nrea
 
     if (num < 0) {
         int fail = 0;
-
-#if defined(_MSC_VER) && defined(_WIN64) && (_MSC_VER > 1400)
-        /* Workaround Win64 fwrite() bug. Ticket #1660 */
-        start = (npy_intp )_ftelli64(fp);
+        start = (npy_intp) npy_ftell(fp);
         if (start < 0) {
             fail = 1;
         }
-        if (_fseeki64(fp, 0, SEEK_END) < 0) {
+        if (npy_fseek(fp, 0, SEEK_END) < 0) {
             fail = 1;
         }
-        numbytes = (npy_intp) _ftelli64(fp);
+        numbytes = (npy_intp) npy_ftell(fp);
         if (numbytes < 0) {
             fail = 1;
         }
         numbytes -= start;
-        if (_fseeki64(fp, start, SEEK_SET) < 0) {
+        if (npy_fseek(fp, start, SEEK_SET) < 0) {
             fail = 1;
         }
-#else
-        start = (npy_intp)ftell(fp);
-        if (start < 0) {
-            fail = 1;
-        }
-        if (fseek(fp, 0, SEEK_END) < 0) {
-            fail = 1;
-        }
-        numbytes = (npy_intp) ftell(fp);
-        if (numbytes < 0) {
-            fail = 1;
-        }
-        numbytes -= start;
-        if (fseek(fp, start, SEEK_SET) < 0) {
-            fail = 1;
-        }
-#endif
         if (fail) {
             PyErr_SetString(PyExc_IOError,
                             "could not seek in file");
@@ -3463,7 +3134,7 @@ array_from_text(PyArray_Descr *dtype, npy_intp num, char *sep, size_t *nread,
         }
     }
     if (num < 0) {
-        tmp = PyDataMem_RENEW(PyArray_DATA(r), NPY_MAX(*nread,1)*dtype->elsize);
+        tmp = PyDataMem_RENEW(PyArray_DATA(r), PyArray_MAX(*nread,1)*dtype->elsize);
         if (tmp == NULL) {
             err = 1;
         }
@@ -3542,7 +3213,7 @@ PyArray_FromFile(FILE *fp, PyArray_Descr *dtype, npy_intp num, char *sep)
     }
     if (((npy_intp) nread) < num) {
         /* Realloc memory for smaller number of elements */
-        const size_t nsize = NPY_MAX(nread,1)*PyArray_DESCR(ret)->elsize;
+        const size_t nsize = PyArray_MAX(nread,1)*PyArray_DESCR(ret)->elsize;
         char *tmp;
 
         if((tmp = PyDataMem_RENEW(PyArray_DATA(ret), nsize)) == NULL) {
@@ -3614,7 +3285,7 @@ PyArray_FromBuffer(PyObject *buf, PyArray_Descr *type,
     if ((offset < 0) || (offset > ts)) {
         PyErr_Format(PyExc_ValueError,
                      "offset must be non-negative and no greater than buffer "\
-                     "length (%" INTP_FMT ")", (npy_intp)ts);
+                     "length (%" NPY_INTP_FMT ")", (npy_intp)ts);
         Py_DECREF(buf);
         Py_DECREF(type);
         return NULL;
@@ -3695,7 +3366,7 @@ PyArray_FromString(char *data, npy_intp slen, PyArray_Descr *dtype,
 {
     int itemsize;
     PyArrayObject *ret;
-    Bool binary;
+    npy_bool binary;
 
     if (dtype == NULL) {
         dtype=PyArray_DescrFromType(NPY_DEFAULT_TYPE);

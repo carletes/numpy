@@ -3,17 +3,13 @@
 
 /*
  * Parses an index that has no fancy indexing. Populates
- * out_dimensions, out_strides, and out_offset. If out_maskstrides
- * and out_maskoffset aren't NULL, then 'self' must have an NA mask
- * which is used to populate those variables as well.
+ * out_dimensions, out_strides, and out_offset.
  */
 NPY_NO_EXPORT int
 parse_index(PyArrayObject *self, PyObject *op,
             npy_intp *out_dimensions,
             npy_intp *out_strides,
-            npy_intp *out_offset,
-            npy_intp *out_maskna_strides,
-            npy_intp *out_maskna_offset);
+            npy_intp *out_offset);
 
 NPY_NO_EXPORT PyObject
 *iter_subscript(PyArrayIterObject *, PyObject *);
@@ -22,8 +18,8 @@ NPY_NO_EXPORT int
 iter_ass_subscript(PyArrayIterObject *, PyObject *, PyObject *);
 
 NPY_NO_EXPORT int
-slice_GetIndices(PySliceObject *r, intp length,
-                 intp *start, intp *stop, intp *step,
-                 intp *slicelength);
+slice_GetIndices(PySliceObject *r, npy_intp length,
+                 npy_intp *start, npy_intp *stop, npy_intp *step,
+                 npy_intp *slicelength);
 
 #endif

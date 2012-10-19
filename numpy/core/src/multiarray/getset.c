@@ -4,19 +4,19 @@
 #include <Python.h>
 #include "structmember.h"
 
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #define _MULTIARRAYMODULE
-#define NPY_NO_PREFIX
 #include "numpy/arrayobject.h"
 
 #include "npy_config.h"
 
-#include "numpy/npy_3kcompat.h"
+#include "npy_pycompat.h"
 
 #include "common.h"
 #include "scalartypes.h"
 #include "descriptor.h"
 #include "getset.h"
+#include "arrayobject.h"
 
 /*******************  array attribute get and set routines ******************/
 
@@ -45,6 +45,11 @@ array_shape_set(PyArrayObject *self, PyObject *val)
     int nd;
     PyArrayObject *ret;
 
+    if (val == NULL) {
+        PyErr_SetString(PyExc_AttributeError,
+                "Cannot delete array shape");
+        return -1;
+    }
     /* Assumes C-order */
     ret = (PyArrayObject *)PyArray_Reshape(self, val);
     if (ret == NULL) {
@@ -71,10 +76,8 @@ array_shape_set(PyArrayObject *self, PyObject *val)
             return -1;
         }
         ((PyArrayObject_fields *)self)->strides = PyArray_DIMS(self) + nd;
-        ((PyArrayObject_fields *)self)->maskna_strides = PyArray_DIMS(self) + 2*nd;
-        memcpy(PyArray_DIMS(self), PyArray_DIMS(ret), nd*sizeof(intp));
-        memcpy(PyArray_STRIDES(self), PyArray_STRIDES(ret), nd*sizeof(intp));
-        memcpy(PyArray_MASKNA_STRIDES(self), PyArray_MASKNA_STRIDES(ret), nd*sizeof(intp));
+        memcpy(PyArray_DIMS(self), PyArray_DIMS(ret), nd*sizeof(npy_intp));
+        memcpy(PyArray_STRIDES(self), PyArray_STRIDES(ret), nd*sizeof(npy_intp));
     }
     else {
         ((PyArrayObject_fields *)self)->dimensions = NULL;
@@ -97,11 +100,16 @@ array_strides_set(PyArrayObject *self, PyObject *obj)
 {
     PyArray_Dims newstrides = {NULL, 0};
     PyArrayObject *new;
-    intp numbytes = 0;
-    intp offset = 0;
+    npy_intp numbytes = 0;
+    npy_intp offset = 0;
     Py_ssize_t buf_len;
     char *buf;
 
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_AttributeError,
+                "Cannot delete array strides");
+        return -1;
+    }
     if (!PyArray_IntpConverter(obj, &newstrides) ||
         newstrides.ptr == NULL) {
         PyErr_SetString(PyExc_TypeError, "invalid strides");
@@ -140,7 +148,7 @@ array_strides_set(PyArrayObject *self, PyObject *obj)
                         "compatible with available memory");
         goto fail;
     }
-    memcpy(PyArray_STRIDES(self), newstrides.ptr, sizeof(intp)*newstrides.len);
+    memcpy(PyArray_STRIDES(self), newstrides.ptr, sizeof(npy_intp)*newstrides.len);
     PyArray_UpdateFlags(self, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_F_CONTIGUOUS);
     PyDimMem_FREE(newstrides.ptr);
     return 0;
@@ -156,10 +164,10 @@ static PyObject *
 array_priority_get(PyArrayObject *self)
 {
     if (PyArray_CheckExact(self)) {
-        return PyFloat_FromDouble(PyArray_PRIORITY);
+        return PyFloat_FromDouble(NPY_PRIORITY);
     }
     else {
-        return PyFloat_FromDouble(PyArray_SUBTYPE_PRIORITY);
+        return PyFloat_FromDouble(NPY_PRIORITY);
     }
 }
 
@@ -251,6 +259,10 @@ array_interface_get(PyArrayObject *self)
         return NULL;
     }
 
+    if (array_might_be_written(self) < 0) {
+        return NULL;
+    }
+
     /* dataptr */
     obj = array_dataptr_get(self);
     PyDict_SetItemString(dict, "data", obj);
@@ -285,7 +297,7 @@ array_data_get(PyArrayObject *self)
 #if defined(NPY_PY3K)
     return PyMemoryView_FromObject((PyObject *)self);
 #else
-    intp nbytes;
+    npy_intp nbytes;
     if (!(PyArray_ISONESEGMENT(self))) {
         PyErr_SetString(PyExc_AttributeError, "cannot get single-"\
                         "segment buffer for discontiguous array");
@@ -312,6 +324,11 @@ array_data_set(PyArrayObject *self, PyObject *op)
     Py_ssize_t buf_len;
     int writeable=1;
 
+    if (op == NULL) {
+        PyErr_SetString(PyExc_AttributeError,
+                "Cannot delete array data");
+        return -1;
+    }
     if (PyObject_AsWriteBuffer(op, &buf, &buf_len) < 0) {
         writeable = 0;
         if (PyObject_AsReadBuffer(op, (const void **)&buf, &buf_len) < 0) {
@@ -341,9 +358,12 @@ array_data_set(PyArrayObject *self, PyObject *op)
             PyArray_CLEARFLAGS(self, NPY_ARRAY_UPDATEIFCOPY);
         }
         Py_DECREF(PyArray_BASE(self));
+        ((PyArrayObject_fields *)self)->base = NULL;
     }
     Py_INCREF(op);
-    ((PyArrayObject_fields *)self)->base = op;
+    if (PyArray_SetBaseObject(self, op) < 0) {
+        return -1;
+    }
     ((PyArrayObject_fields *)self)->data = buf;
     ((PyArrayObject_fields *)self)->flags = NPY_ARRAY_CARRAY;
     if (!writeable) {
@@ -362,11 +382,11 @@ array_itemsize_get(PyArrayObject *self)
 static PyObject *
 array_size_get(PyArrayObject *self)
 {
-    intp size=PyArray_SIZE(self);
-#if SIZEOF_INTP <= SIZEOF_LONG
+    npy_intp size=PyArray_SIZE(self);
+#if NPY_SIZEOF_INTP <= SIZEOF_LONG
     return PyInt_FromLong((long) size);
 #else
-    if (size > MAX_LONG || size < MIN_LONG) {
+    if (size > NPY_MAX_LONG || size < NPY_MIN_LONG) {
         return PyLong_FromLongLong(size);
     }
     else {
@@ -378,11 +398,11 @@ array_size_get(PyArrayObject *self)
 static PyObject *
 array_nbytes_get(PyArrayObject *self)
 {
-    intp nbytes = PyArray_NBYTES(self);
-#if SIZEOF_INTP <= SIZEOF_LONG
+    npy_intp nbytes = PyArray_NBYTES(self);
+#if NPY_SIZEOF_INTP <= SIZEOF_LONG
     return PyInt_FromLong((long) nbytes);
 #else
-    if (nbytes > MAX_LONG || nbytes < MIN_LONG) {
+    if (nbytes > NPY_MAX_LONG || nbytes < NPY_MIN_LONG) {
         return PyLong_FromLongLong(nbytes);
     }
     else {
@@ -400,27 +420,33 @@ array_nbytes_get(PyArrayObject *self)
  * (contiguous or fortran) with compatibile dimensions The shape and strides
  * will be adjusted in that case as well.
  */
-
 static int
 array_descr_set(PyArrayObject *self, PyObject *arg)
 {
     PyArray_Descr *newtype = NULL;
-    intp newdim;
+    npy_intp newdim;
     int i;
     char *msg = "new type not compatible with array.";
 
-    if (!(PyArray_DescrConverter(arg, &newtype)) ||
-        newtype == NULL) {
-        PyErr_SetString(PyExc_TypeError, "invalid data-type for array");
+    if (arg == NULL) {
+        PyErr_SetString(PyExc_AttributeError,
+                "Cannot delete array dtype");
         return -1;
     }
+
+    if (!(PyArray_DescrConverter(arg, &newtype)) ||
+        newtype == NULL) {
+        PyErr_SetString(PyExc_TypeError,
+                "invalid data-type for array");
+        return -1;
+    }
+
     if (PyDataType_FLAGCHK(newtype, NPY_ITEM_HASOBJECT) ||
         PyDataType_FLAGCHK(newtype, NPY_ITEM_IS_POINTER) ||
         PyDataType_FLAGCHK(PyArray_DESCR(self), NPY_ITEM_HASOBJECT) ||
         PyDataType_FLAGCHK(PyArray_DESCR(self), NPY_ITEM_IS_POINTER)) {
-        PyErr_SetString(PyExc_TypeError,                      \
-                        "Cannot change data-type for object " \
-                        "array.");
+        PyErr_SetString(PyExc_TypeError,
+                "Cannot change data-type for object array.");
         Py_DECREF(newtype);
         return -1;
     }
@@ -437,7 +463,7 @@ array_descr_set(PyArrayObject *self, PyObject *arg)
         /* But no other flexible types */
         else {
             PyErr_SetString(PyExc_TypeError,
-                            "data-type must not be 0-sized");
+                    "data-type must not be 0-sized");
             Py_DECREF(newtype);
             return -1;
         }
@@ -527,7 +553,12 @@ array_struct_get(PyArrayObject *self)
     PyArrayInterface *inter;
     PyObject *ret;
 
-    inter = (PyArrayInterface *)_pya_malloc(sizeof(PyArrayInterface));
+    if (PyArray_ISWRITEABLE(self)) {
+        if (array_might_be_written(self) < 0) {
+            return NULL;
+        }
+    }
+    inter = (PyArrayInterface *)PyArray_malloc(sizeof(PyArrayInterface));
     if (inter==NULL) {
         return PyErr_NoMemory();
     }
@@ -544,14 +575,14 @@ array_struct_get(PyArrayObject *self)
      *when the array is "reshaped".
      */
     if (PyArray_NDIM(self) > 0) {
-        inter->shape = (intp *)_pya_malloc(2*sizeof(intp)*PyArray_NDIM(self));
+        inter->shape = (npy_intp *)PyArray_malloc(2*sizeof(npy_intp)*PyArray_NDIM(self));
         if (inter->shape == NULL) {
-            _pya_free(inter);
+            PyArray_free(inter);
             return PyErr_NoMemory();
         }
         inter->strides = inter->shape + PyArray_NDIM(self);
-        memcpy(inter->shape, PyArray_DIMS(self), sizeof(intp)*PyArray_NDIM(self));
-        memcpy(inter->strides, PyArray_STRIDES(self), sizeof(intp)*PyArray_NDIM(self));
+        memcpy(inter->shape, PyArray_DIMS(self), sizeof(npy_intp)*PyArray_NDIM(self));
+        memcpy(inter->strides, PyArray_STRIDES(self), sizeof(npy_intp)*PyArray_NDIM(self));
     }
     else {
         inter->shape = NULL;
@@ -564,7 +595,7 @@ array_struct_get(PyArrayObject *self)
             PyErr_Clear();
         }
         else {
-            inter->flags &= ARR_HAS_DESCR;
+            inter->flags &= NPY_ARR_HAS_DESCR;
         }
     }
     else {
@@ -601,14 +632,14 @@ _get_part(PyArrayObject *self, int imag)
     int offset;
 
     switch (PyArray_DESCR(self)->type_num) {
-        case PyArray_CFLOAT:
-            float_type_num = PyArray_FLOAT;
+        case NPY_CFLOAT:
+            float_type_num = NPY_FLOAT;
             break;
-        case PyArray_CDOUBLE:
-            float_type_num = PyArray_DOUBLE;
+        case NPY_CDOUBLE:
+            float_type_num = NPY_DOUBLE;
             break;
-        case PyArray_CLONGDOUBLE:
-            float_type_num = PyArray_LONGDOUBLE;
+        case NPY_CLONGDOUBLE:
+            float_type_num = NPY_LONGDOUBLE;
             break;
         default:
             PyErr_Format(PyExc_ValueError,
@@ -675,6 +706,11 @@ array_real_set(PyArrayObject *self, PyObject *val)
     PyArrayObject *new;
     int retcode;
 
+    if (val == NULL) {
+        PyErr_SetString(PyExc_AttributeError,
+                "Cannot delete array real part");
+        return -1;
+    }
     if (PyArray_ISCOMPLEX(self)) {
         ret = _get_part(self, 0);
         if (ret == NULL) {
@@ -732,6 +768,11 @@ array_imag_get(PyArrayObject *self)
 static int
 array_imag_set(PyArrayObject *self, PyObject *val)
 {
+    if (val == NULL) {
+        PyErr_SetString(PyExc_AttributeError,
+                "Cannot delete array imaginary part");
+        return -1;
+    }
     if (PyArray_ISCOMPLEX(self)) {
         PyArrayObject *ret;
         PyArrayObject *new;
@@ -752,8 +793,8 @@ array_imag_set(PyArrayObject *self, PyObject *val)
         return retcode;
     }
     else {
-        PyErr_SetString(PyExc_TypeError, "array does not have "\
-                        "imaginary part to set");
+        PyErr_SetString(PyExc_TypeError,
+                "array does not have imaginary part to set");
         return -1;
     }
 }
@@ -774,6 +815,12 @@ array_flat_set(PyArrayObject *self, PyObject *val)
     int swap;
     PyArray_CopySwapFunc *copyswap;
 
+    if (val == NULL) {
+        PyErr_SetString(PyExc_AttributeError,
+                "Cannot delete array flat iterator");
+        return -1;
+    }
+    if (PyArray_FailUnlessWriteable(self, "array") < 0) return -1;
     typecode = PyArray_DESCR(self);
     Py_INCREF(typecode);
     arr = (PyArrayObject *)PyArray_FromAny(val, typecode,
@@ -906,7 +953,7 @@ NPY_NO_EXPORT PyGetSetDef array_getsetlist[] = {
         (getter)array_ctypes_get,
         NULL,
         NULL, NULL},
-    {   "T",
+    {"T",
         (getter)array_transpose_get,
         NULL,
         NULL, NULL},

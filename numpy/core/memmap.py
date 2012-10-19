@@ -4,7 +4,7 @@ import warnings
 from numeric import uint8, ndarray, dtype
 import sys
 
-from numpy.compat import asbytes
+import numpy as np
 
 dtypedescr = dtype
 valid_filemodes = ["r", "c", "r+", "w+"]
@@ -60,11 +60,16 @@ class memmap(ndarray):
         Default is 'r+'.
     offset : int, optional
         In the file, array data starts at this offset. Since `offset` is
-        measured in bytes, it should be a multiple of the byte-size of
-        `dtype`. Requires ``shape=None``. The default is 0.
+        measured in bytes, it should normally be a multiple of the byte-size
+        of `dtype`. When ``mode != 'r'``, even positive offsets beyond end of
+        file are valid; The file will be extended to accommodate the
+        additional data. The default offset is 0.
     shape : tuple, optional
-        The desired shape of the array. By default, the returned array will be
-        1-D with the number of elements determined by file size and data-type.
+        The desired shape of the array. If ``mode == 'r'`` and the number
+        of remaining bytes after `offset` is not a multiple of the byte-size
+        of `dtype`, you must specify `shape`. By default, the returned array
+        will be 1-D with the number of elements determined by file size
+        and data-type.
     order : {'C', 'F'}, optional
         Specify the order of the ndarray memory layout: C (row-major) or
         Fortran (column-major).  This only has an effect if the shape is
@@ -79,7 +84,6 @@ class memmap(ndarray):
     mode : str
         File mode.
 
-
     Methods
     -------
     close
@@ -88,6 +92,7 @@ class memmap(ndarray):
         Flush any changes in memory to file on disk.
         When you delete a memmap object, flush is called first to write
         changes to disk before removing the object.
+
 
     Notes
     -----
@@ -198,8 +203,10 @@ class memmap(ndarray):
 
         if hasattr(filename,'read'):
             fid = filename
+            own_file = False
         else:
             fid = open(filename, (mode == 'c' and 'r' or mode)+'b')
+            own_file = True
 
         if (mode == 'w+') and shape is None:
             raise ValueError("shape must be given")
@@ -228,7 +235,7 @@ class memmap(ndarray):
 
         if mode == 'w+' or (mode == 'r+' and flen < bytes):
             fid.seek(bytes - 1, 0)
-            fid.write(asbytes('\0'))
+            fid.write(np.compat.asbytes('\0'))
             fid.flush()
 
         if mode == 'c':
@@ -258,16 +265,22 @@ class memmap(ndarray):
         elif hasattr(filename, "name"):
             self.filename = os.path.abspath(filename.name)
 
+        if own_file:
+            fid.close()
+
         return self
 
     def __array_finalize__(self, obj):
-        if hasattr(obj, '_mmap'):
+        if hasattr(obj, '_mmap') and np.may_share_memory(self, obj):
             self._mmap = obj._mmap
             self.filename = obj.filename
             self.offset = obj.offset
             self.mode = obj.mode
         else:
             self._mmap = None
+            self.filename = None
+            self.offset = None
+            self.mode = None
 
     def flush(self):
         """

@@ -285,6 +285,7 @@ class TestFloatExceptions(TestCase):
         self.assert_raises_fpe(fpeerr, flop, sc1, sc2[()]);
         self.assert_raises_fpe(fpeerr, flop, sc1[()], sc2[()]);
 
+    @dec.knownfailureif(True, "See ticket 1755")
     def test_floating_exceptions(self):
         """Test basic arithmetic function errors"""
         oldsettings = np.seterr(all='raise')
@@ -593,50 +594,6 @@ class TestNonzero(TestCase):
         assert_equal(np.count_nonzero(x['b'].T), 5)
         assert_equal(np.nonzero(x['a'].T), ([0,1,1,2],[1,1,2,0]))
         assert_equal(np.nonzero(x['b'].T), ([0,0,1,2,2],[0,1,2,0,2]))
-
-    def test_count_nonzero_axis(self):
-        a = array([[0,1,0],[2,3,0]])
-        assert_equal(np.count_nonzero(a, axis=()), [[0,1,0],[1,1,0]])
-        assert_equal(np.count_nonzero(a, axis=0), [1,2,0])
-        assert_equal(np.count_nonzero(a, axis=1), [1,2])
-        assert_equal(np.count_nonzero(a, axis=(0,1)), 3)
-
-        res = array([-1,-1,-1], dtype='i2')
-        np.count_nonzero(a, axis=0, out=res)
-        assert_equal(res, [1,2,0])
-
-        # A 3-dimensional array with an NA
-        a = array([[[0,1,0],[2,np.NA,0]], [[0,1,0],[2,3,0]]], maskna=True)
-
-        # Test that the NA reduces correctly
-        assert_array_equal(np.count_nonzero(a, axis=()),
-                            [[[0,1,0],[1,np.NA,0]], [[0,1,0],[1,1,0]]])
-        assert_array_equal(np.count_nonzero(a, axis=0), [[0,2,0], [2,np.NA,0]])
-        assert_array_equal(np.count_nonzero(a, axis=1), [[1,np.NA,0], [1,2,0]])
-        assert_array_equal(np.count_nonzero(a, axis=2), [[1,np.NA], [1,2]])
-        assert_array_equal(np.count_nonzero(a, axis=(0,1)), [2,np.NA,0])
-        assert_array_equal(np.count_nonzero(a, axis=(0,2)), [2,np.NA])
-        assert_array_equal(np.count_nonzero(a, axis=(1,2)), [np.NA,3])
-        assert_array_equal(np.count_nonzero(a, axis=(0,1,2)),
-                                                np.NA(dtype=np.intp))
-        assert_array_equal(np.count_nonzero(a, axis=None),
-                                                np.NA(dtype=np.intp))
-
-        # Test that the NA gets skipped correctly
-        assert_array_equal(np.count_nonzero(a, axis=(), skipna=True),
-                            [[[0,1,0],[1,0,0]], [[0,1,0],[1,1,0]]])
-        assert_array_equal(np.count_nonzero(a, axis=0, skipna=True),
-                            [[0,2,0], [2,1,0]])
-        assert_array_equal(np.count_nonzero(a, axis=1, skipna=True),
-                            [[1,1,0], [1,2,0]])
-        assert_array_equal(np.count_nonzero(a, axis=2, skipna=True),
-                            [[1,1], [1,2]])
-        assert_array_equal(np.count_nonzero(a, axis=(0,1), skipna=True),
-                            [2,3,0])
-        assert_array_equal(np.count_nonzero(a, axis=(0,2), skipna=True), [2,3])
-        assert_array_equal(np.count_nonzero(a, axis=(1,2), skipna=True), [2,3])
-        assert_array_equal(np.count_nonzero(a, axis=(0,1,2), skipna=True), 5)
-        assert_array_equal(np.count_nonzero(a, axis=None, skipna=True), 5)
 
 class TestIndex(TestCase):
     def test_boolean(self):
@@ -1159,6 +1116,12 @@ class TestAllclose(object):
     rtol = 1e-5
     atol = 1e-8
 
+    def setUp(self):
+        self.olderr = np.seterr(invalid='ignore')
+
+    def tearDown(self):
+        np.seterr(**self.olderr)
+
     def tst_allclose(self,x,y):
         assert_(allclose(x,y), "%s and %s not close" % (x,y))
 
@@ -1212,6 +1175,119 @@ class TestAllclose(object):
         allclose(x,y)
         assert_array_equal(x,array([inf,1]))
         assert_array_equal(y,array([0,inf]))
+
+
+class TestIsclose(object):
+    rtol = 1e-5
+    atol = 1e-8
+
+    def setup(self):
+        atol = self.atol
+        rtol = self.rtol
+        arr = array([100,1000])
+        aran = arange(125).reshape((5,5,5))
+
+        self.all_close_tests = [
+                ([1, 0], [1, 0]),
+                ([atol], [0]),
+                ([1], [1 + rtol + atol]),
+                (arr, arr + arr*rtol),
+                (arr, arr + arr*rtol + atol),
+                (aran, aran + aran*rtol),
+                (inf, inf),
+                (inf, [inf]),
+                ([inf, -inf], [inf, -inf]),
+                ]
+        self.none_close_tests = [
+                ([inf, 0], [1, inf]),
+                ([inf, -inf], [1, 0]),
+                ([inf, inf], [1, -inf]),
+                ([inf, inf], [1, 0]),
+                ([nan, 0], [nan, -inf]),
+                ([atol*2], [0]),
+                ([1], [1 + rtol + atol*2]),
+                (aran, aran + rtol*1.1*aran + atol*1.1),
+                (array([inf, 1]), array([0, inf])),
+                ]
+        self.some_close_tests = [
+                ([inf, 0], [inf, atol*2]),
+                ([atol, 1, 1e6*(1 + 2*rtol) + atol], [0, nan, 1e6]),
+                (arange(3), [0, 1, 2.1]),
+                (nan, [nan, nan, nan]),
+                ([0], [atol, inf, -inf, nan]),
+                (0, [atol, inf, -inf, nan]),
+                ]
+        self.some_close_results = [
+                [True, False],
+                [True, False, False],
+                [True, True, False],
+                [False, False, False],
+                [True, False, False, False],
+                [True, False, False, False],
+                ]
+
+    def test_ip_isclose(self):
+        self.setup()
+        tests = self.some_close_tests
+        results = self.some_close_results
+        for (x, y), result in zip(tests, results):
+            yield (assert_array_equal, isclose(x, y), result)
+
+    def tst_all_isclose(self, x, y):
+        assert_(all(isclose(x, y)), "%s and %s not close" % (x, y))
+
+    def tst_none_isclose(self, x, y):
+        msg = "%s and %s shouldn't be close"
+        assert_(not any(isclose(x, y)), msg % (x, y))
+
+    def tst_isclose_allclose(self, x, y):
+        msg = "isclose.all() and allclose aren't same for %s and %s"
+        assert_array_equal(isclose(x, y).all(), allclose(x, y), msg % (x, y))
+
+    def test_ip_all_isclose(self):
+        self.setup()
+        for (x,y) in self.all_close_tests:
+            yield (self.tst_all_isclose, x, y)
+
+    def test_ip_none_isclose(self):
+        self.setup()
+        for (x,y) in self.none_close_tests:
+            yield (self.tst_none_isclose, x, y)
+
+    def test_ip_isclose_allclose(self):
+        self.setup()
+        tests = (self.all_close_tests + self.none_close_tests +
+                 self.some_close_tests)
+        for (x, y) in tests:
+            yield (self.tst_isclose_allclose, x, y)
+
+    def test_equal_nan(self):
+        assert_array_equal(isclose(nan, nan, equal_nan=True), [True])
+        arr = array([1.0, nan])
+        assert_array_equal(isclose(arr, arr, equal_nan=True), [True, True])
+
+    def test_masked_arrays(self):
+        x = np.ma.masked_where([True, True, False], np.arange(3))
+        assert_(type(x) == type(isclose(2, x)))
+
+        x = np.ma.masked_where([True, True, False], [nan, inf, nan])
+        assert_(type(x) == type(isclose(inf, x)))
+
+        x = np.ma.masked_where([True, True, False], [nan, nan, nan])
+        y = isclose(nan, x, equal_nan=True)
+        assert_(type(x) == type(y))
+        # Ensure that the mask isn't modified...
+        assert_array_equal([True, True, False], y.mask)
+
+    def test_scalar_return(self):
+        assert_(isscalar(isclose(1, 1)))
+
+    def test_no_parameter_modification(self):
+        x = array([inf, 1])
+        y = array([0, inf])
+        isclose(x, y)
+        assert_array_equal(x, array([inf, 1]))
+        assert_array_equal(y, array([0, inf]))
 
 
 class TestStdVar(TestCase):
@@ -1332,20 +1408,6 @@ class TestLikeFuncs(TestCase):
 
         b = like_function(a, subok=False)
         assert_(not (type(b) is np.matrix))
-
-        # Test that 'maskna=True' works
-        a = np.arange(6).reshape(2,3)
-        res = like_function(a, maskna=True)
-        assert_(res.flags.maskna)
-        assert_(res.flags.ownmaskna)
-        assert_equal(res.shape, a.shape)
-        assert_equal(res.dtype, a.dtype)
-
-        # Test that no NA mask is created when the prototype is NA-masked
-        a = np.arange(6, maskna=True).reshape(2,3)
-        assert_(a.flags.maskna)
-        res = like_function(a)
-        assert_(not res.flags.maskna)
 
     def test_ones_like(self):
         self.check_like_function(np.ones_like, 1)

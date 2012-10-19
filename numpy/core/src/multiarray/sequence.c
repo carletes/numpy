@@ -2,15 +2,14 @@
 #include <Python.h>
 #include "structmember.h"
 
-#define NPY_NO_DEPRECATED_API
+#define NPY_NO_DEPRECATED_API NPY_API_VERSION
 #define _MULTIARRAYMODULE
-#define NPY_NO_PREFIX
 #include "numpy/arrayobject.h"
 #include "numpy/arrayscalars.h"
 
 #include "npy_config.h"
 
-#include "numpy/npy_3kcompat.h"
+#include "npy_pycompat.h"
 
 #include "common.h"
 #include "mapping.h"
@@ -72,7 +71,7 @@ array_slice(PyArrayObject *self, Py_ssize_t ilow, Py_ssize_t ihigh)
     ret = (PyArrayObject *)PyArray_NewFromDescr(Py_TYPE(self), dtype,
                              PyArray_NDIM(self), shape,
                              PyArray_STRIDES(self), data,
-             PyArray_FLAGS(self) & ~(NPY_ARRAY_MASKNA | NPY_ARRAY_OWNMASKNA),
+                             PyArray_FLAGS(self),
                              (PyObject *)self);
     if (ret == NULL) {
         return NULL;
@@ -83,27 +82,6 @@ array_slice(PyArrayObject *self, Py_ssize_t ilow, Py_ssize_t ihigh)
         return NULL;
     }
     PyArray_UpdateFlags(ret, NPY_ARRAY_UPDATE_ALL);
-
-    /* Also take a view of the NA mask if it exists */
-    if (PyArray_HASMASKNA(self)) {
-        PyArrayObject_fields *fret = (PyArrayObject_fields *)ret;
-
-        fret->maskna_dtype = PyArray_MASKNA_DTYPE(self);
-        Py_INCREF(fret->maskna_dtype);
-
-        data = PyArray_MASKNA_DATA(self);
-        if (ilow < ihigh) {
-            data += ilow * PyArray_MASKNA_STRIDES(self)[0];
-        }
-        fret->maskna_data = data;
-
-        memcpy(fret->maskna_strides, PyArray_MASKNA_STRIDES(self),
-                        PyArray_NDIM(self) * sizeof(npy_intp));
-
-        /* This view doesn't own the mask */
-        fret->flags |= NPY_ARRAY_MASKNA;
-        fret->flags &= ~NPY_ARRAY_OWNMASKNA;
-    }
 
     return (PyObject *)ret;
 }
@@ -120,9 +98,7 @@ array_ass_slice(PyArrayObject *self, Py_ssize_t ilow,
                         "cannot delete array elements");
         return -1;
     }
-    if (!PyArray_ISWRITEABLE(self)) {
-        PyErr_SetString(PyExc_RuntimeError,
-                        "array is not writeable");
+    if (PyArray_FailUnlessWriteable(self, "assignment destination") < 0) {
         return -1;
     }
     tmp = (PyArrayObject *)array_slice(self, ilow, ihigh);
@@ -192,7 +168,7 @@ array_any_nonzero(PyArrayObject *arr)
 {
     npy_intp counter;
     PyArrayIterObject *it;
-    Bool anyTRUE = FALSE;
+    npy_bool anyTRUE = NPY_FALSE;
 
     it = (PyArrayIterObject *)PyArray_IterNew((PyObject *)arr);
     if (it == NULL) {
@@ -201,7 +177,7 @@ array_any_nonzero(PyArrayObject *arr)
     counter = it->size;
     while (counter--) {
         if (PyArray_DESCR(arr)->f->nonzero(it->dataptr, arr)) {
-            anyTRUE = TRUE;
+            anyTRUE = NPY_TRUE;
             break;
         }
         PyArray_ITER_NEXT(it);
